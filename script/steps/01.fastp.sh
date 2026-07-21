@@ -30,7 +30,7 @@ fi
 SCRIPT_PATH=$(readlink -f "${BASH_SOURCE[0]}") || exit 1
 SCRIPT_DIR=$(cd "$(dirname "$SCRIPT_PATH")" && pwd) || exit 1
 REPO_DIR=${DBITM_PROJECT_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}
-config_file="$REPO_DIR/config/dbitm.config.sh"
+config_file=${DBITM_CONFIG:-$REPO_DIR/config/dbitm.config.sh}
 if [[ ! -f "$config_file" ]]; then
     echo "[dbitm] fastp: config file not found: $config_file" >&2
     exit 1

@@ -1,3 +1,6 @@
+# execution mode: local (run directly) or hpc (submit via sbatch)
+RUN_MODE=${RUN_MODE:-local}
+
 # file path configuration
 SCRATCH_ROOT=${SCRATCH_ROOT:-}
 # TAPS/TAPS-v2 bwa index prefix or indexed reference FASTA
