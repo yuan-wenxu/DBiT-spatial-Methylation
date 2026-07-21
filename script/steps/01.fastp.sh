@@ -63,7 +63,7 @@ if [[ -n ${SCRATCH_ROOT:-} ]]; then
     echo "[dbitm] scratch root: $SCRATCH_ROOT"
     mkdir -p "$SCRATCH_ROOT"
     scratch_root=$(realpath "$SCRATCH_ROOT")
-    run_id=${SLURM_JOB_ID:-fastp}
+    run_id=${SLURM_JOB_ID:-fastp_$$}
     scratch_run=$scratch_root/dbitm/$run_id
     run_input=$scratch_run/input
     run_output=$scratch_run/fastp

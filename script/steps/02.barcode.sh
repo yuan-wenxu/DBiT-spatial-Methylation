@@ -48,7 +48,6 @@ fi
 source "$config_file"
 
 raw_abs=$(realpath "$raw_path")
-sample_name=$(basename "$raw_abs")
 final_dir=$(dirname "$raw_abs")/dbitm
 fastp_dir=$final_dir/fastp
 input_r1=$fastp_dir/R1.filtered.fastq.gz
@@ -129,7 +128,7 @@ if [[ -n ${SCRATCH_ROOT:-} ]]; then
     echo "[dbitm] scratch root: $SCRATCH_ROOT"
     mkdir -p "$SCRATCH_ROOT"
     scratch_root=$(realpath "$SCRATCH_ROOT")
-    run_id=${SLURM_JOB_ID:-${sample_name}_barcode_$$}
+    run_id=${SLURM_JOB_ID:-barcode_$$}
     scratch_run=$scratch_root/dbitm/$run_id
     scratch_input=$scratch_run/input
     run_output=$scratch_run/barcode
