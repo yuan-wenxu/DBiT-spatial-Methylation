@@ -9,7 +9,7 @@ Main control script for DBiT-spatial-Methylation pipeline.
 
 Arguments:
   assay          Assay type: taps | taps-v2 | emseq
-  step           Pipeline step: fastp | barcode | align
+  step           Pipeline step: fastp | barcode | align | spike-align | pool | call
   --input PATH   Raw FASTQ directory path
   --config PATH  Optional config file (default: config/dbitm.config.sh)
 
@@ -20,6 +20,7 @@ Execution mode is controlled by RUN_MODE in the config file:
 Examples:
   dbitm.sh taps fastp --input /data/raw
   dbitm.sh emseq align --input /data/raw --config my_config.sh
+  dbitm.sh taps spike-align --input /data/raw --config my_config.sh
 EOF
     exit 1
 }
@@ -33,6 +34,9 @@ declare -A STEP_SCRIPTS=(
     [fastp]=01.fastp.sh
     [barcode]=02.barcode.sh
     [align]=03.align.sh
+    [spike-align]=03.spike_align.sh
+    [pool]=04.pool.sh
+    [call]=05.call.sh
 )
 
 # ── parse positional arguments ──
@@ -120,18 +124,31 @@ echo "[dbitm] run mode: $RUN_MODE"
 
 if [[ "$RUN_MODE" == hpc ]]; then
 
-    step_upper=$(echo "$step" | tr '[:lower:]' '[:upper:]')
+    step_upper=$(echo "$step" | tr '[:lower:]-' '[:upper:]_')
     job_name_var="${step_upper}_NAME"
     threads_var="${step_upper}_THREADS"
     partition_var="${step_upper}_PARTITION"
     mem_var="${step_upper}_MEM"
     time_var="${step_upper}_TIME"
 
-    job_name=${!job_name_var:-$step}
-    threads=${!threads_var:-1}
+    required_resource_vars=(
+        "$job_name_var"
+        "$threads_var"
+        "$mem_var"
+        "$time_var"
+    )
+    for resource_var in "${required_resource_vars[@]}"; do
+        if [[ -z ${!resource_var:-} ]]; then
+            echo "[dbitm] error: $resource_var is required for '$step' in hpc mode" >&2
+            exit 1
+        fi
+    done
+
+    job_name=${!job_name_var}
+    threads=${!threads_var}
     partition=${!partition_var:-}
-    mem=${!mem_var:-8G}
-    time=${!time_var:-24:00:00}
+    mem=${!mem_var}
+    time=${!time_var}
 
     sbatch_args=(
         --job-name="$job_name"

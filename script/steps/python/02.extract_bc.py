@@ -692,7 +692,7 @@ def run_chunk_worker(
                     elapsed = max(now - last_report_at, 1e-9)
                     speed = (total - reads_at_last_report) / elapsed
                     print(
-                        f"[extract_bc] chunk={chunk_index:04d} reads={total} "
+                        f"[extract-bc] chunk={chunk_index:04d} reads={total} "
                         f"kept={kept} speed={speed:.0f} reads/s",
                         flush=True,
                     )
@@ -1022,18 +1022,18 @@ def main(argv: list[str] | None = None) -> int:
     stats_path.write_text(json.dumps(stats, indent=2), encoding="utf-8")
 
     elapsed = max(time.monotonic() - started_at, 1e-9)
-    print(f"[extract_bc] mode={args.mode}")
-    print(f"[extract_bc] input_r1={args.r1}")
-    print(f"[extract_bc] input_r2={args.r2}")
-    print(f"[extract_bc] output_dir={output_dir}")
-    print(f"[extract_bc] chunks={args.chunks}")
-    print(f"[extract_bc] batch_size={args.batch_size}")
-    print(f"[extract_bc] batch_count={batch_index}")
-    print(f"[extract_bc] stats={stats_path}")
+    print(f"[extract-bc] mode={args.mode}")
+    print(f"[extract-bc] input-r1={args.r1}")
+    print(f"[extract-bc] input-r2={args.r2}")
+    print(f"[extract-bc] output-dir={output_dir}")
+    print(f"[extract-bc] chunks={args.chunks}")
+    print(f"[extract-bc] batch-size={args.batch_size}")
+    print(f"[extract-bc] batch-count={batch_index}")
+    print(f"[extract-bc] stats={stats_path}")
     print(
-        f"[extract_bc] kept={kept}/{total} "
-        f"keep_rate={kept / total if total else 0.0:.4f} "
-        f"spike_in={total - kept} avg_speed={total / elapsed:.1f} reads/s"
+        f"[extract-bc] kept={kept}/{total} "
+        f"keep-rate={kept / total if total else 0.0:.4f} "
+        f"spike-in={total - kept} avg-speed={total / elapsed:.1f} reads/s"
     )
     return 0
 
