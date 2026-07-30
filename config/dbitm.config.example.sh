@@ -63,7 +63,9 @@ POOL_SORT_MEM=${POOL_SORT_MEM:-}
 # methylation calling configuration
 CALL_CHROMOSOMES=${CALL_CHROMOSOMES:-chr1,chr2,chr3,chr4,chr5,chr6,chr7,chr8,chr9,chr10,chr11,chr12,chr13,chr14,chr15,chr16,chr17,chr18,chr19,chrX}
 CALL_MITO_CHROMOSOMES=${CALL_MITO_CHROMOSOMES:-chrM}
-CALL_CONTEXT_MODE=${CALL_CONTEXT_MODE:-both}
+CALL_CONTEXT_MODE=${CALL_CONTEXT_MODE:-both} # Options: cg, ch, both
+# Safety limit for the number of CB-tagged BAMs created by samtools split.
+EMSEQ_CALL_MAX_SPOTS=${EMSEQ_CALL_MAX_SPOTS:-10000}
 CALL_MIN_BASE_QUALITY=${CALL_MIN_BASE_QUALITY:-30}
 CALL_MIN_MAPPING_QUALITY=${CALL_MIN_MAPPING_QUALITY:-10}
 CALL_MAX_DEPTH=${CALL_MAX_DEPTH:-250}

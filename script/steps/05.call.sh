@@ -46,7 +46,7 @@ raw_abs=$(realpath "$raw_path")
 final_dir=$(dirname "$raw_abs")/dbitm
 pooled_bam=$final_dir/pooled/pooled.byCB.bam
 if [[ "$assay" == emseq ]]; then
-    caller_script=$REPO_DIR/script/steps/python/05.methy_caller_emseq.py
+    caller_script=$REPO_DIR/script/steps/05.methy_caller_emseq.sh
 else
     caller_script=$REPO_DIR/script/steps/python/05.methy_caller_taps.py
 fi
@@ -81,7 +81,8 @@ echo "[dbitm] assay: $assay"
 echo "[dbitm] reference: $reference"
 echo "[dbitm] pooled BAM: $pooled_bam"
 echo "[dbitm] chromosomes: $CALL_CHROMOSOMES"
-echo "[dbitm] context mode: $CALL_CONTEXT_MODE"
+caller_context_mode=$CALL_CONTEXT_MODE
+echo "[dbitm] context mode: $caller_context_mode"
 echo "[dbitm] config: $config_file"
 echo "[dbitm] output directory: $final_dir/coverage"
 
@@ -110,23 +111,42 @@ fi
 mkdir -p "$run_output"
 
 echo "[dbitm] starting methylation calling..."
-pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default \
-    python "$caller_script" \
-    --bam "$run_bam" \
-    --reference "$reference" \
-    --out-dir "$run_output" \
-    --chromosomes "$CALL_CHROMOSOMES" \
-    --context-mode "$CALL_CONTEXT_MODE" \
-    --min-base-quality "$CALL_MIN_BASE_QUALITY" \
-    --min-mapping-quality "$CALL_MIN_MAPPING_QUALITY" \
-    --max-depth "$CALL_MAX_DEPTH" \
-    --batch-size "$CALL_BATCH_SIZE" \
-    --r1-left-trim "$CALL_R1_LEFT_TRIMMING" \
-    --r1-right-trim "$CALL_R1_RIGHT_TRIMMING" \
-    --r2-left-trim "$CALL_R2_LEFT_TRIMMING" \
-    --r2-right-trim "$CALL_R2_RIGHT_TRIMMING" \
-    --jobs "$CALL_JOBS" \
-    > "$run_output/call.log" 2>&1
+if [[ "$assay" == emseq ]]; then
+    pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default \
+        bash "$caller_script" \
+        --bam "$run_bam" \
+        --reference "$reference" \
+        --out-dir "$run_output" \
+        --chromosomes "$CALL_CHROMOSOMES" \
+        --context-mode "$caller_context_mode" \
+        --min-base-quality "$CALL_MIN_BASE_QUALITY" \
+        --min-mapping-quality "$CALL_MIN_MAPPING_QUALITY" \
+        --r1-left-trim "$CALL_R1_LEFT_TRIMMING" \
+        --r1-right-trim "$CALL_R1_RIGHT_TRIMMING" \
+        --r2-left-trim "$CALL_R2_LEFT_TRIMMING" \
+        --r2-right-trim "$CALL_R2_RIGHT_TRIMMING" \
+        --jobs "$CALL_JOBS" \
+        --max-spots "${EMSEQ_CALL_MAX_SPOTS:-10000}" \
+        > "$run_output/call.log" 2>&1
+else
+    pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default \
+        python "$caller_script" \
+        --bam "$run_bam" \
+        --reference "$reference" \
+        --out-dir "$run_output" \
+        --chromosomes "$CALL_CHROMOSOMES" \
+        --context-mode "$caller_context_mode" \
+        --min-base-quality "$CALL_MIN_BASE_QUALITY" \
+        --min-mapping-quality "$CALL_MIN_MAPPING_QUALITY" \
+        --max-depth "$CALL_MAX_DEPTH" \
+        --batch-size "$CALL_BATCH_SIZE" \
+        --r1-left-trim "$CALL_R1_LEFT_TRIMMING" \
+        --r1-right-trim "$CALL_R1_RIGHT_TRIMMING" \
+        --r2-left-trim "$CALL_R2_LEFT_TRIMMING" \
+        --r2-right-trim "$CALL_R2_RIGHT_TRIMMING" \
+        --jobs "$CALL_JOBS" \
+        > "$run_output/call.log" 2>&1
+fi
 
 echo "[dbitm] call finished successfully"
 if [[ "$use_scratch" == true ]]; then
