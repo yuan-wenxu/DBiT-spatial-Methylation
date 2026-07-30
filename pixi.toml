@@ -5,6 +5,9 @@ name = "DBiT-spatial-Methylation"
 platforms = ["linux-64"]
 version = "0.1.0"
 
+[tasks]
+init = { cmd = "bash install-cli.sh", description = "Install the locked environment and the dbitm command" }
+
 [dependencies]
 python = "3.11.*"
 setuptools = ">=80,<82"
