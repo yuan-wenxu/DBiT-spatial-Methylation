@@ -3,16 +3,23 @@
 
 Reads a coordinate-sorted pooled BAM, performs pileup over reference CpG and
 CH positions, groups counts by spot (CB tag), and writes per-spot .CG.cov /
-.CH.cov files in one BAM pass.
+.CH.cov files. Chromosomes are processed serially; genomic intervals within
+one chromosome are processed in parallel and merged by the parent process.
 """
 
 from __future__ import annotations
 
 import argparse
+import multiprocessing
+import os
+import re
+import shutil
 import sys
+import tempfile
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, TextIO, Tuple
 
 import pysam
 
@@ -22,6 +29,11 @@ PAIRED_FLAGS: Set[int] = {99, 147, 83, 163}
 # forward-strand CH contexts and their reverse-complement mapping
 CH_FORWARD_CONTEXTS: Set[str] = {"CA", "CC", "CT"}
 CH_REVERSE_MAP: Dict[str, str] = {"T": "CA", "G": "CC", "A": "CT"}
+
+# Set in the parent immediately before forking interval workers. The immutable
+# chromosome string is then shared copy-on-write instead of being serialized
+# once per interval.
+WORKER_CHROMOSOME_SEQUENCE: Optional[str] = None
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
@@ -42,6 +54,14 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         "-o", "--out-dir",
         required=True,
         help="Output directory for per-spot .CG.cov / .CH.cov files.",
+    )
+    parser.add_argument(
+        "--barcode-whitelist",
+        required=True,
+        help=(
+            "Ordered barcode whitelist. Use '<index> <sequence>' or one "
+            "sequence per line."
+        ),
     )
     parser.add_argument(
         "-c", "--chromosomes",
@@ -74,8 +94,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--max-depth",
         type=int,
-        default=250,
-        help="Maximum pileup depth. Default: 250.",
+        default=50_000,
+        help="Maximum pileup depth. Default: 50,000.",
     )
     parser.add_argument(
         "--batch-size",
@@ -103,7 +123,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         "-j", "--jobs",
         type=int,
         default=8,
-        help="Worker processes for parallel chromosome processing. Default: 8.",
+        help="Worker processes for intervals within one chromosome. Default: 8.",
     )
     parser.add_argument(
         "--verbose", action="store_true",
@@ -130,78 +150,124 @@ def validate_chromosomes(reference: str, chromosomes: List[str]) -> None:
         )
 
 
-def find_cpg_positions(reference: str, chromosome: str) -> List[int]:
-    """Return 0-based positions of C in CpG contexts."""
-    with pysam.FastaFile(reference) as fa:
-        seq = fa.fetch(chromosome).upper()
-    positions: List[int] = []
-    for i in range(len(seq) - 1):
-        if seq[i] == "C" and seq[i + 1] == "G":
-            positions.append(i)
-    return positions
+BarcodeMap = Dict[str, str]
 
 
-def find_ch_positions(
-    reference: str, chromosome: str
-) -> List[Tuple[int, str, str]]:
-    """Return (0-based C position, context, strand) for CH sites."""
-    with pysam.FastaFile(reference) as fa:
-        seq = fa.fetch(chromosome).upper()
-    results: List[Tuple[int, str, str]] = []
-    # forward strand: C followed by A/C/T
-    for i in range(len(seq) - 1):
-        ctx = seq[i : i + 2]
-        if ctx in CH_FORWARD_CONTEXTS:
-            results.append((i, ctx, "+"))
-    # reverse strand: G preceded by T/G/A → complement → forward context
-    for i in range(1, len(seq) - 1):
-        if seq[i] != "G":
-            continue
-        prev = seq[i - 1]
-        ctx = CH_REVERSE_MAP.get(prev)
-        if ctx is not None:
-            results.append((i, ctx, "-"))
-    results.sort(key=lambda x: x[0])
-    return results
+def load_barcode_whitelist(path: str) -> Tuple[BarcodeMap, List[Tuple[str, str]], int]:
+    """Return sequence-to-index mapping, ordered entries, and barcode length."""
+    whitelist_path = Path(path)
+    if not whitelist_path.is_file():
+        raise ValueError(f"barcode whitelist not found: {path}")
 
+    raw_entries: List[Tuple[Optional[str], str]] = []
+    with whitelist_path.open(encoding="utf-8") as handle:
+        for line_number, raw_line in enumerate(handle, start=1):
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            fields = line.split()
+            if len(fields) == 1:
+                barcode_id: Optional[str] = None
+                sequence = fields[0].upper()
+            else:
+                barcode_id = fields[0]
+                sequence = fields[-1].upper()
+            if not sequence or re.fullmatch(r"[ACGTN]+", sequence) is None:
+                raise ValueError(
+                    f"invalid barcode sequence at {path}:{line_number}: {sequence}"
+                )
+            raw_entries.append((barcode_id, sequence))
 
-def build_batches(
-    cpg_positions: List[int],
-    ch_positions: List[Tuple[int, str, str]],
-    batch_size: int,
-) -> List[Tuple[int, int, Set[int], Dict[int, Tuple[str, str]]]]:
-    """Yield (start, end, cpg_set, ch_map) batches covering positions."""
-    cpg_set = set(cpg_positions)
-    ch_map = {
-        pos: (context, strand)
-        for pos, context, strand in ch_positions
-    }
-    all_positions: Set[int] = cpg_set | set(ch_map)
-    if not all_positions:
-        return []
-    sorted_positions = sorted(all_positions)
-    batches: List[
-        Tuple[int, int, Set[int], Dict[int, Tuple[str, str]]]
-    ] = []
-    batch_start = sorted_positions[0]
-    current_cpg: Set[int] = set()
-    current_ch: Dict[int, Tuple[str, str]] = {}
-    for pos in sorted_positions:
-        if pos - batch_start > batch_size:
-            batches.append((batch_start, pos - 1, current_cpg, current_ch))
-            batch_start = pos
-            current_cpg = set()
-            current_ch = {}
-        if pos in cpg_set:
-            current_cpg.add(pos)
-        ch_context = ch_map.get(pos)
-        if ch_context is not None:
-            current_ch[pos] = ch_context
-    if current_cpg or current_ch:
-        batches.append(
-            (batch_start, sorted_positions[-1], current_cpg, current_ch)
+    if not raw_entries:
+        raise ValueError(f"barcode whitelist is empty: {path}")
+
+    generated_width = max(2, len(str(len(raw_entries) - 1)))
+    entries: List[Tuple[str, str]] = []
+    for position, (barcode_id, sequence) in enumerate(raw_entries):
+        resolved_id = (
+            barcode_id
+            if barcode_id is not None
+            else f"{position:0{generated_width}d}"
         )
-    return batches
+        if re.fullmatch(r"[A-Za-z0-9.-]+", resolved_id) is None:
+            raise ValueError(
+                f"barcode index is not filename-safe: {resolved_id}"
+            )
+        entries.append((resolved_id, sequence))
+
+    barcode_lengths = {len(sequence) for _, sequence in entries}
+    if len(barcode_lengths) != 1:
+        raise ValueError("all whitelist barcode sequences must have equal length")
+    ids = [barcode_id for barcode_id, _ in entries]
+    sequences = [sequence for _, sequence in entries]
+    if len(ids) != len(set(ids)):
+        raise ValueError("barcode whitelist contains duplicate indices")
+    if len(sequences) != len(set(sequences)):
+        raise ValueError("barcode whitelist contains duplicate sequences")
+
+    return (
+        {sequence: barcode_id for barcode_id, sequence in entries},
+        entries,
+        barcode_lengths.pop(),
+    )
+
+
+def spot_id_from_cb(
+    cb: str, barcode_map: BarcodeMap, barcode_length: int
+) -> str:
+    expected_length = barcode_length * 2
+    if len(cb) != expected_length:
+        raise ValueError(
+            f"CB tag '{cb}' has length {len(cb)}; expected {expected_length}"
+        )
+    barcode1 = cb[:barcode_length].upper()
+    barcode2 = cb[barcode_length:].upper()
+    try:
+        index1 = barcode_map[barcode1]
+        index2 = barcode_map[barcode2]
+    except KeyError as exc:
+        raise ValueError(
+            f"CB tag '{cb}' contains a barcode absent from the whitelist"
+        ) from exc
+    return f"{index1}_{index2}"
+
+
+def write_spot_manifest(
+    path: Path, entries: List[Tuple[str, str]]
+) -> None:
+    with path.open("w", encoding="utf-8") as handle:
+        handle.write(
+            "spot_id\tbarcode1_index\tbarcode2_index\t"
+            "barcode1\tbarcode2\traw_cb\n"
+        )
+        for index1, barcode1 in entries:
+            for index2, barcode2 in entries:
+                handle.write(
+                    f"{index1}_{index2}\t{index1}\t{index2}\t"
+                    f"{barcode1}\t{barcode2}\t{barcode1}{barcode2}\n"
+                )
+
+
+def classify_reference_position(
+    sequence: str, pos: int
+) -> Tuple[bool, Optional[Tuple[str, str]]]:
+    """Return whether pos is CpG-C and an optional CH (context, strand)."""
+    base = sequence[pos].upper()
+    next_base = (
+        sequence[pos + 1].upper() if pos + 1 < len(sequence) else ""
+    )
+    if base == "C":
+        dinucleotide = base + next_base
+        if dinucleotide == "CG":
+            return True, None
+        if dinucleotide in CH_FORWARD_CONTEXTS:
+            return False, (dinucleotide, "+")
+        return False, None
+    if base == "G" and pos > 0:
+        context = CH_REVERSE_MAP.get(sequence[pos - 1].upper())
+        if context is not None:
+            return False, (context, "-")
+    return False, None
 
 
 def is_trimmed(
@@ -237,15 +303,12 @@ ChCounts = Dict[str, Dict[int, Tuple[int, int, str, str]]]
 
 def count_cg_column(
     pileup_col,
-    cpg_set: Set[int],
     cb_tag: str,
     cg_counts: CgCounts,
     r1_left: int, r1_right: int,
     r2_left: int, r2_right: int,
 ) -> None:
     pos = pileup_col.pos
-    if pos not in cpg_set:
-        return
     for pileup_read in pileup_col.pileups:
         record = pileup_read.alignment
         if record.flag not in PAIRED_FLAGS:
@@ -290,17 +353,14 @@ def get_forward_index(record: pysam.AlignedSegment, query_pos: int,
 
 def count_ch_column(
     pileup_col,
-    ch_map: Dict[int, Tuple[str, str]],
+    ctx: str,
+    strand: str,
     cb_tag: str,
     ch_counts: ChCounts,
     r1_left: int, r1_right: int,
     r2_left: int, r2_right: int,
 ) -> None:
     pos = pileup_col.pos
-    target = ch_map.get(pos)
-    if target is None:
-        return
-    ctx, strand = target
     for pileup_read in pileup_col.pileups:
         record = pileup_read.alignment
         if record.flag not in PAIRED_FLAGS:
@@ -368,126 +428,276 @@ def format_ch_line(chrom: str, pos: int, meth: int, unmeth: int,
     )
 
 
-def flush_batch_cg(
-    cg_counts: CgCounts, chrom: str, out_dir: Path,
-) -> None:
-    for cb, pos_map in cg_counts.items():
-        if not pos_map:
-            continue
-        subdir = out_dir / "host" / cb[:2]
-        subdir.mkdir(parents=True, exist_ok=True)
-        out_path = subdir / f"{cb}.CG.cov"
-        with out_path.open("a", encoding="utf-8") as fh:
+def write_cg_part(
+    cg_counts: CgCounts,
+    chrom: str,
+    part_path: Path,
+    barcode_map: BarcodeMap,
+    barcode_length: int,
+) -> Tuple[int, int]:
+    processed = 0
+    covered = 0
+    spot_maps = [
+        (spot_id_from_cb(cb, barcode_map, barcode_length), pos_map)
+        for cb, pos_map in cg_counts.items()
+        if pos_map
+    ]
+    with part_path.open("w", encoding="utf-8") as handle:
+        for spot_id, pos_map in sorted(spot_maps):
             for pos in sorted(pos_map):
                 meth, unmeth = pos_map[pos]
-                fh.write(format_cg_line(chrom, pos, meth, unmeth))
+                handle.write(
+                    f"{spot_id}\t{format_cg_line(chrom, pos, meth, unmeth)}"
+                )
+                processed += 1
+                covered += int(meth + unmeth > 0)
+    return processed, covered
 
 
-def flush_batch_ch(
-    ch_counts: ChCounts, chrom: str, out_dir: Path,
-) -> None:
-    for cb, pos_map in ch_counts.items():
-        if not pos_map:
-            continue
-        subdir = out_dir / "host" / cb[:2]
-        subdir.mkdir(parents=True, exist_ok=True)
-        out_path = subdir / f"{cb}.CH.cov"
-        with out_path.open("a", encoding="utf-8") as fh:
+def write_ch_part(
+    ch_counts: ChCounts,
+    chrom: str,
+    part_path: Path,
+    barcode_map: BarcodeMap,
+    barcode_length: int,
+) -> Tuple[int, int]:
+    processed = 0
+    covered = 0
+    spot_maps = [
+        (spot_id_from_cb(cb, barcode_map, barcode_length), pos_map)
+        for cb, pos_map in ch_counts.items()
+        if pos_map
+    ]
+    with part_path.open("w", encoding="utf-8") as handle:
+        for spot_id, pos_map in sorted(spot_maps):
             for pos in sorted(pos_map):
                 meth, unmeth, ctx, strand = pos_map[pos]
-                fh.write(format_ch_line(chrom, pos, meth, unmeth, ctx, strand))
+                handle.write(
+                    f"{spot_id}\t"
+                    f"{format_ch_line(chrom, pos, meth, unmeth, ctx, strand)}"
+                )
+                processed += 1
+                covered += int(meth + unmeth > 0)
+    return processed, covered
 
 
-def process_chromosome(
+BatchResult = Tuple[int, str, str, int, int, int, int]
+
+
+def process_interval(
     bam_path: str,
-    reference: str,
     chrom: str,
-    out_dir: Path,
+    batch_index: int,
+    start: int,
+    stop: int,
+    part_dir: str,
     cb_tag: str,
     context_mode: str,
     min_base_quality: int,
     min_mapping_quality: int,
     max_depth: int,
-    batch_size: int,
     r1_left: int, r1_right: int,
     r2_left: int, r2_right: int,
-    verbose: bool,
-) -> Tuple[int, int, int, int]:
-    cpg_processed = 0
-    cpg_covered = 0
-    ch_processed = 0
-    ch_covered = 0
+    barcode_map: BarcodeMap,
+    barcode_length: int,
+) -> BatchResult:
+    sequence = WORKER_CHROMOSOME_SEQUENCE
+    if sequence is None:
+        raise RuntimeError("worker chromosome sequence was not initialized")
 
-    cpg_positions: List[int] = []
-    ch_positions: List[Tuple[int, str, str]] = []
-    if context_mode in ("cg", "both"):
-        cpg_positions = find_cpg_positions(reference, chrom)
-    if context_mode in ("ch", "both"):
-        ch_positions = find_ch_positions(reference, chrom)
-
-    if not cpg_positions and not ch_positions:
-        if verbose:
-            print(f"[methy-caller] chrom={chrom} no positions, skipping")
-        return 0, 0, 0, 0
-
-    batches = build_batches(cpg_positions, ch_positions, batch_size)
-    if verbose:
-        print(
-            f"[methy-caller] chrom={chrom} cpg-sites={len(cpg_positions)} "
-            f"ch-sites={len(ch_positions)} batches={len(batches)}"
-        )
-
+    cg_counts: CgCounts = defaultdict(dict)
+    ch_counts: ChCounts = defaultdict(dict)
     with pysam.AlignmentFile(bam_path, "rb") as bam:
-        for batch_idx, (start, end, cpg_set, ch_map) in enumerate(batches):
-            cg_counts: CgCounts = defaultdict(dict)
-            ch_counts: ChCounts = defaultdict(dict)
-
-            pileup_iter = bam.pileup(
-                chrom, start, end,
-                ignore_overlaps=True,
-                min_base_quality=min_base_quality,
-                stepper="samtools",
-                redo_baq=False,
-                max_depth=max_depth,
-                ignore_orphans=True,
-                compute_baq=True,
-                min_mapping_quality=min_mapping_quality,
-            )
-
-            for pileup_col in pileup_iter:
-                if cpg_set:
-                    count_cg_column(pileup_col, cpg_set, cb_tag,
-                                    cg_counts, r1_left, r1_right,
-                                    r2_left, r2_right)
-                if ch_map:
-                    count_ch_column(pileup_col, ch_map, cb_tag,
-                                    ch_counts, r1_left, r1_right,
-                                    r2_left, r2_right)
-
-            if cg_counts:
-                flush_batch_cg(cg_counts, chrom, out_dir)
-                for _, pos_map in cg_counts.items():
-                    cpg_processed += len(pos_map)
-                    cpg_covered += sum(
-                        1 for v in pos_map.values()
-                        if v[0] + v[1] > 0
-                    )
-            if ch_counts:
-                flush_batch_ch(ch_counts, chrom, out_dir)
-                for _, pos_map in ch_counts.items():
-                    ch_processed += len(pos_map)
-                    ch_covered += sum(
-                        1 for v in pos_map.values()
-                        if v[0] + v[1] > 0
-                    )
-
-            if verbose and batch_idx % 10 == 0:
-                print(
-                    f"[methy-caller] chrom={chrom} batch={batch_idx + 1}/{len(batches)} "
-                    f"region={start}-{end}"
+        pileup_iter = bam.pileup(
+            chrom, start, stop,
+            truncate=True,
+            ignore_overlaps=True,
+            min_base_quality=min_base_quality,
+            stepper="samtools",
+            redo_baq=False,
+            max_depth=max_depth,
+            ignore_orphans=True,
+            compute_baq=True,
+            min_mapping_quality=min_mapping_quality,
+        )
+        for pileup_col in pileup_iter:
+            pos = pileup_col.pos
+            is_cpg, ch_target = classify_reference_position(sequence, pos)
+            if is_cpg and context_mode in ("cg", "both"):
+                count_cg_column(
+                    pileup_col, cb_tag, cg_counts,
+                    r1_left, r1_right, r2_left, r2_right,
+                )
+            if ch_target is not None and context_mode in ("ch", "both"):
+                ctx, strand = ch_target
+                count_ch_column(
+                    pileup_col, ctx, strand, cb_tag, ch_counts,
+                    r1_left, r1_right, r2_left, r2_right,
                 )
 
-    return cpg_processed, cpg_covered, ch_processed, ch_covered
+    part_root = Path(part_dir)
+    cg_part = part_root / f"batch_{batch_index:06d}.CG.part"
+    ch_part = part_root / f"batch_{batch_index:06d}.CH.part"
+    cpg_processed, cpg_covered = write_cg_part(
+        cg_counts, chrom, cg_part, barcode_map, barcode_length
+    )
+    ch_processed, ch_covered = write_ch_part(
+        ch_counts, chrom, ch_part, barcode_map, barcode_length
+    )
+    return (
+        batch_index,
+        str(cg_part),
+        str(ch_part),
+        cpg_processed,
+        cpg_covered,
+        ch_processed,
+        ch_covered,
+    )
+
+
+def append_part_to_outputs(
+    part_path: Path,
+    context: str,
+    out_dir: Path,
+    output_paths: Dict[Path, Path],
+    temp_suffix: str,
+) -> None:
+    active_spot: Optional[str] = None
+    output_handle: Optional[TextIO] = None
+    try:
+        with part_path.open(encoding="utf-8") as part_handle:
+            for raw_line in part_handle:
+                spot_id, payload = raw_line.split("\t", 1)
+                if spot_id != active_spot:
+                    if output_handle is not None:
+                        output_handle.close()
+                    prefix = spot_id.split("_", 1)[0]
+                    final_path = (
+                        out_dir / "host" / prefix / f"{spot_id}.{context}.cov"
+                    )
+                    final_path.parent.mkdir(parents=True, exist_ok=True)
+                    if final_path in output_paths:
+                        temp_path = output_paths[final_path]
+                        mode = "a"
+                    else:
+                        temp_path = final_path.with_name(
+                            final_path.name + temp_suffix
+                        )
+                        output_paths[final_path] = temp_path
+                        mode = "w"
+                    output_handle = temp_path.open(mode, encoding="utf-8")
+                    active_spot = spot_id
+                output_handle.write(payload)
+    finally:
+        if output_handle is not None:
+            output_handle.close()
+
+
+def process_chromosome(
+    args: argparse.Namespace,
+    chrom: str,
+    chromosome_index: int,
+    part_root: Path,
+    barcode_map: BarcodeMap,
+    barcode_length: int,
+    output_paths: Dict[Path, Path],
+    temp_suffix: str,
+) -> Tuple[int, int, int, int]:
+    global WORKER_CHROMOSOME_SEQUENCE
+
+    with pysam.FastaFile(args.reference) as fasta:
+        sequence = fasta.fetch(chrom)
+    if not sequence.isupper():
+        sequence = sequence.upper()
+    WORKER_CHROMOSOME_SEQUENCE = sequence
+
+    chromosome_length = len(sequence)
+    intervals = [
+        (batch_index, start, min(start + args.batch_size, chromosome_length))
+        for batch_index, start in enumerate(
+            range(0, chromosome_length, args.batch_size)
+        )
+    ]
+    chromosome_part_dir = part_root / f"{chromosome_index:03d}"
+    chromosome_part_dir.mkdir(parents=True)
+    results: List[BatchResult] = []
+
+    if args.verbose:
+        print(
+            f"[methy-caller] chrom={chrom} length={chromosome_length} "
+            f"batches={len(intervals)} workers={min(args.jobs, len(intervals))}"
+        )
+
+    worker_args = (
+        args.bam,
+        chrom,
+        chromosome_part_dir,
+        args.cb_tag,
+        args.context_mode,
+        args.min_base_quality,
+        args.min_mapping_quality,
+        args.max_depth,
+        args.r1_left_trim,
+        args.r1_right_trim,
+        args.r2_left_trim,
+        args.r2_right_trim,
+        barcode_map,
+        barcode_length,
+    )
+    if args.jobs == 1 or len(intervals) == 1:
+        for batch_index, start, stop in intervals:
+            results.append(
+                process_interval(
+                    worker_args[0], worker_args[1],
+                    batch_index, start, stop,
+                    str(worker_args[2]), *worker_args[3:],
+                )
+            )
+    else:
+        fork_context = multiprocessing.get_context("fork")
+        with ProcessPoolExecutor(
+            max_workers=min(args.jobs, len(intervals)),
+            mp_context=fork_context,
+        ) as executor:
+            future_to_batch = {
+                executor.submit(
+                    process_interval,
+                    worker_args[0], worker_args[1],
+                    batch_index, start, stop,
+                    str(worker_args[2]), *worker_args[3:],
+                ): batch_index
+                for batch_index, start, stop in intervals
+            }
+            for future in as_completed(future_to_batch):
+                batch_index = future_to_batch[future]
+                try:
+                    results.append(future.result())
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"chrom={chrom} batch={batch_index + 1} failed: {exc}"
+                    ) from exc
+
+    totals = [0, 0, 0, 0]
+    for result in sorted(results):
+        _, cg_part, ch_part, cp, cc, hp, hc = result
+        if args.context_mode in ("cg", "both"):
+            append_part_to_outputs(
+                Path(cg_part), "CG", Path(args.out_dir),
+                output_paths, temp_suffix,
+            )
+        if args.context_mode in ("ch", "both"):
+            append_part_to_outputs(
+                Path(ch_part), "CH", Path(args.out_dir),
+                output_paths, temp_suffix,
+            )
+        totals[0] += cp
+        totals[1] += cc
+        totals[2] += hp
+        totals[3] += hc
+
+    shutil.rmtree(chromosome_part_dir)
+    WORKER_CHROMOSOME_SEQUENCE = None
+    return totals[0], totals[1], totals[2], totals[3]
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -497,6 +707,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"[methy-caller] bam={args.bam}")
         print(f"[methy-caller] reference={args.reference}")
         print(f"[methy-caller] out-dir={args.out_dir}")
+        print(f"[methy-caller] barcode-whitelist={args.barcode_whitelist}")
         print(f"[methy-caller] chromosomes={args.chromosomes}")
         print(f"[methy-caller] context-mode={args.context_mode}")
         print(f"[methy-caller] dry-run=1")
@@ -514,16 +725,43 @@ def main(argv: Optional[List[str]] = None) -> int:
               file=sys.stderr)
         return 1
 
-    chromosomes = parse_chromosomes(args.chromosomes)
-    validate_chromosomes(args.reference, chromosomes)
+    if args.jobs <= 0:
+        print("[methy-caller] error: --jobs must be greater than zero",
+              file=sys.stderr)
+        return 1
+    if args.batch_size <= 0:
+        print("[methy-caller] error: --batch-size must be greater than zero",
+              file=sys.stderr)
+        return 1
+    if args.max_depth <= 0:
+        print("[methy-caller] error: --max-depth must be greater than zero",
+              file=sys.stderr)
+        return 1
+
+    try:
+        chromosomes = parse_chromosomes(args.chromosomes)
+        validate_chromosomes(args.reference, chromosomes)
+        barcode_map, barcode_entries, barcode_length = load_barcode_whitelist(
+            args.barcode_whitelist
+        )
+    except (OSError, ValueError) as exc:
+        print(f"[methy-caller] error: {exc}", file=sys.stderr)
+        return 1
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    temp_suffix = f".tmp.{os.getpid()}"
+    manifest_path = out_dir / "spot_manifest.tsv"
+    manifest_temp = manifest_path.with_name(manifest_path.name + temp_suffix)
+    write_spot_manifest(manifest_temp, barcode_entries)
 
     print(f"[methy-caller] bam={args.bam}")
     print(f"[methy-caller] reference={args.reference}")
+    print(f"[methy-caller] barcode-whitelist={args.barcode_whitelist}")
+    print(f"[methy-caller] spots={len(barcode_entries) ** 2}")
     print(f"[methy-caller] chromosomes={len(chromosomes)}")
     print(f"[methy-caller] context-mode={args.context_mode}")
+    print(f"[methy-caller] interval-workers={args.jobs}")
     print(f"[methy-caller] out-dir={args.out_dir}")
 
     total_cpg_proc = 0
@@ -531,41 +769,47 @@ def main(argv: Optional[List[str]] = None) -> int:
     total_ch_proc = 0
     total_ch_cov = 0
 
-    from concurrent.futures import ProcessPoolExecutor, as_completed
-
-    with ProcessPoolExecutor(max_workers=args.jobs) as executor:
-        futures = {}
-        for chrom in chromosomes:
-            future = executor.submit(
-                process_chromosome,
-                args.bam, args.reference, chrom, out_dir, args.cb_tag,
-                args.context_mode,
-                args.min_base_quality, args.min_mapping_quality,
-                args.max_depth, args.batch_size,
-                args.r1_left_trim, args.r1_right_trim,
-                args.r2_left_trim, args.r2_right_trim,
-                args.verbose,
-            )
-            futures[future] = chrom
-
-        for future in as_completed(futures):
-            chrom = futures[future]
-            try:
-                cp, cc, hp, hc = future.result()
-            except Exception as exc:
-                print(f"[methy-caller] chrom={chrom} failed: {exc}",
-                      file=sys.stderr)
-                raise
-            total_cpg_proc += cp
-            total_cpg_cov += cc
-            total_ch_proc += hp
-            total_ch_cov += hc
-            if args.verbose:
-                print(
-                    f"[methy-caller] chrom={chrom} done "
-                    f"cpg-processed={cp} cpg-covered={cc} "
-                    f"ch-processed={hp} ch-covered={hc}"
+    output_paths: Dict[Path, Path] = {}
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix=".taps-call-parts.", dir=out_dir
+        ) as part_directory:
+            for chromosome_index, chrom in enumerate(chromosomes):
+                cp, cc, hp, hc = process_chromosome(
+                    args,
+                    chrom,
+                    chromosome_index,
+                    Path(part_directory),
+                    barcode_map,
+                    barcode_length,
+                    output_paths,
+                    temp_suffix,
                 )
+                total_cpg_proc += cp
+                total_cpg_cov += cc
+                total_ch_proc += hp
+                total_ch_cov += hc
+                if args.verbose:
+                    print(
+                        f"[methy-caller] chrom={chrom} merged "
+                        f"cpg-processed={cp} cpg-covered={cc} "
+                        f"ch-processed={hp} ch-covered={hc}"
+                    )
+        for final_path, temp_path in output_paths.items():
+            os.replace(temp_path, final_path)
+        os.replace(manifest_temp, manifest_path)
+    except Exception as exc:
+        for temp_path in output_paths.values():
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+        try:
+            manifest_temp.unlink()
+        except FileNotFoundError:
+            pass
+        print(f"[methy-caller] error: {exc}", file=sys.stderr)
+        return 1
 
     print(
         f"[methy-caller] done "

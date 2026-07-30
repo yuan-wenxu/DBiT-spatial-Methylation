@@ -44,7 +44,7 @@ source "$config_file"
 
 raw_abs=$(realpath "$raw_path")
 final_dir=$(dirname "$raw_abs")/dbitm
-pooled_bam=$final_dir/pooled/pooled.byCB.bam
+pooled_bam=$final_dir/pooled/pooled.cb.bam
 if [[ "$assay" == emseq ]]; then
     caller_script=$REPO_DIR/script/steps/05.methy_caller_emseq.sh
 else
@@ -72,6 +72,16 @@ if [[ "$reference" != /* ]]; then
 fi
 reference=$(realpath -m "$reference")
 
+barcode_whitelist=${BARCODE_WHITELIST:-$REPO_DIR/docs/barcodes/barcodes50.tsv}
+if [[ "$barcode_whitelist" != /* ]]; then
+    barcode_whitelist=$REPO_DIR/$barcode_whitelist
+fi
+if [[ ! -f "$barcode_whitelist" ]]; then
+    echo "[dbitm] call: barcode whitelist not found: $barcode_whitelist" >&2
+    exit 1
+fi
+barcode_whitelist=$(realpath "$barcode_whitelist")
+
 use_scratch=false
 run_bam=$pooled_bam
 run_output=$final_dir/coverage
@@ -79,6 +89,7 @@ run_output=$final_dir/coverage
 echo "====== dbitm call ======"
 echo "[dbitm] assay: $assay"
 echo "[dbitm] reference: $reference"
+echo "[dbitm] barcode whitelist: $barcode_whitelist"
 echo "[dbitm] pooled BAM: $pooled_bam"
 echo "[dbitm] chromosomes: $CALL_CHROMOSOMES"
 caller_context_mode=$CALL_CONTEXT_MODE
@@ -97,7 +108,7 @@ if [[ -n ${SCRATCH_ROOT:-} ]]; then
     run_id=${SLURM_JOB_ID:-call_$$}
     scratch_run=$scratch_root/dbitm/$run_id
     scratch_input=$scratch_run/pooled_input
-    run_bam=$scratch_input/pooled.byCB.bam
+    run_bam=$scratch_input/pooled.cb.bam
     run_output=$scratch_run/coverage
     use_scratch=true
     enable_cleanup
@@ -134,6 +145,7 @@ else
         --bam "$run_bam" \
         --reference "$reference" \
         --out-dir "$run_output" \
+        --barcode-whitelist "$barcode_whitelist" \
         --chromosomes "$CALL_CHROMOSOMES" \
         --context-mode "$caller_context_mode" \
         --min-base-quality "$CALL_MIN_BASE_QUALITY" \

@@ -42,7 +42,7 @@ if [[ ! -f "$config_file" ]]; then
 fi
 source "$config_file"
 
-# derive per-thread sort memory: POOL_MEM / POOL_THREADS (fallback to POOL_SORT_MEM)
+# use configured per-thread sort memory, otherwise derive POOL_MEM / POOL_THREADS
 if [[ -n "${POOL_SORT_MEM:-}" ]]; then
     sort_mem=$POOL_SORT_MEM
 else
@@ -53,6 +53,7 @@ fi
 raw_abs=$(realpath "$raw_path")
 final_dir=$(dirname "$raw_abs")/dbitm
 align_dir=$final_dir/align
+spike_align_dir=$final_dir/spike_align
 if [[ ! -d "$align_dir" ]]; then
     echo "[dbitm] pool: align output directory not found: $align_dir" >&2
     exit 1
@@ -66,14 +67,24 @@ if (( ${#cb_bams[@]} == 0 )); then
     exit 1
 fi
 
+declare -a spike_names=(lambda puc19)
+declare -a source_spike_bams=()
+shopt -s nullglob
+for spike_name in "${spike_names[@]}"; do
+    source_spike_bams+=("$spike_align_dir"/*."$spike_name".bam)
+done
+shopt -u nullglob
+
 use_scratch=false
 run_input=$align_dir
+run_spike_input=$spike_align_dir
 run_output=$final_dir/pooled
 
 echo "====== dbitm pool ======"
 echo "[dbitm] assay: $assay"
 echo "[dbitm] input chunks: ${#cb_bams[@]}"
 echo "[dbitm] align directory: $align_dir"
+echo "[dbitm] spike-in BAM files found: ${#source_spike_bams[@]}"
 echo "[dbitm] config: $config_file"
 echo "[dbitm] output directory: $final_dir/pooled"
 
@@ -88,43 +99,69 @@ if [[ -n ${SCRATCH_ROOT:-} ]]; then
     run_id=${SLURM_JOB_ID:-pool_$$}
     scratch_run=$scratch_root/dbitm/$run_id
     run_input=$scratch_run/align
+    run_spike_input=$scratch_run/spike_align
     run_output=$scratch_run/pooled
     use_scratch=true
     enable_cleanup
     mkdir -p "$run_input"
     echo "[dbitm] copying align BAM files to scratch: $run_input"
     cp -a "$align_dir/." "$run_input"/
+    if (( ${#source_spike_bams[@]} > 0 )); then
+        mkdir -p "$run_spike_input"
+        echo "[dbitm] copying spike-in BAM files to scratch: $run_spike_input"
+        cp -a "${source_spike_bams[@]}" "$run_spike_input/"
+    fi
 fi
 
 rm -rf -- "$run_output"
 mkdir -p "$run_output"
 
-cat_tmp=$run_output/unsorted.cb.bam
-pooled_bam=$run_output/pooled.byCB.bam
+pooled_bam=$run_output/pooled.cb.bam
 pool_log=$run_output/pool.log
 : > "$pool_log"
 
-echo "[dbitm] concatenating BAM chunks..."
-pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default \
-    samtools cat -o "$cat_tmp" "$run_input"/*.cb.bam \
-    >> "$pool_log" 2>&1
+pool_bam_set() {
+    local pool_name=$1
+    local output_bam=$2
+    shift 2
+    local input_bams=("$@")
+    local cat_tmp=$run_output/unsorted.$pool_name.bam
 
-echo "[dbitm] sorting by genomic coordinate..."
-pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default \
-    samtools sort \
-    -m "$sort_mem" \
-    -@ "${POOL_THREADS:-4}" \
-    -o "$pooled_bam" "$cat_tmp" \
-    >> "$pool_log" 2>&1
+    echo "[dbitm] concatenating $pool_name BAM chunks..."
+    pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default \
+        samtools cat -o "$cat_tmp" "${input_bams[@]}" \
+        >> "$pool_log" 2>&1
 
-rm -f -- "$cat_tmp"
+    echo "[dbitm] sorting $pool_name BAM by genomic coordinate..."
+    pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default \
+        samtools sort \
+        -m "$sort_mem" \
+        -@ "${POOL_THREADS}" \
+        -o "$output_bam" "$cat_tmp" \
+        >> "$pool_log" 2>&1
 
-echo "[dbitm] indexing pooled BAM..."
-pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default \
-    samtools index "$pooled_bam" \
-    >> "$pool_log" 2>&1
+    rm -f -- "$cat_tmp"
 
-echo "[dbitm] pool finished: $pooled_bam"
+    echo "[dbitm] indexing $pool_name pooled BAM..."
+    pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default \
+        samtools index "$output_bam" \
+        >> "$pool_log" 2>&1
+    echo "[dbitm] pool finished: $output_bam"
+}
+
+shopt -s nullglob
+declare -a host_bams=("$run_input"/*.cb.bam)
+shopt -u nullglob
+pool_bam_set cb "$pooled_bam" "${host_bams[@]}"
+
+for spike_name in "${spike_names[@]}"; do
+    shopt -s nullglob
+    spike_bams=("$run_spike_input"/*."$spike_name".bam)
+    shopt -u nullglob
+    if (( ${#spike_bams[@]} > 0 )); then
+        pool_bam_set "$spike_name" "$run_output/pooled.$spike_name.bam" "${spike_bams[@]}"
+    fi
+done
 
 if [[ "$use_scratch" == true ]]; then
     rm -rf -- "$final_dir/pooled"

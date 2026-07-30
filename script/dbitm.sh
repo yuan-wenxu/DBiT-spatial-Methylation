@@ -246,7 +246,7 @@ submit_all_hpc() {
     submit_step spike-align "$barcode_job_id"
     spike_align_job_id=$SUBMITTED_JOB_ID
 
-    submit_step pool "$align_job_id"
+    submit_step pool "$align_job_id:$spike_align_job_id"
     pool_job_id=$SUBMITTED_JOB_ID
 
     submit_step call "$pool_job_id"
