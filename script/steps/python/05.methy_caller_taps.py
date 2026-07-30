@@ -215,13 +215,30 @@ def load_barcode_whitelist(path: str) -> Tuple[BarcodeMap, List[Tuple[str, str]]
 def spot_id_from_cb(
     cb: str, barcode_map: BarcodeMap, barcode_length: int
 ) -> str:
-    expected_length = barcode_length * 2
-    if len(cb) != expected_length:
-        raise ValueError(
-            f"CB tag '{cb}' has length {len(cb)}; expected {expected_length}"
-        )
-    barcode1 = cb[:barcode_length].upper()
-    barcode2 = cb[barcode_length:].upper()
+    if "+" in cb:
+        barcodes = cb.split("+")
+        if len(barcodes) != 2:
+            raise ValueError(
+                f"CB tag '{cb}' must contain exactly two barcodes"
+            )
+        barcode1, barcode2 = barcodes
+        if len(barcode1) != barcode_length or len(barcode2) != barcode_length:
+            raise ValueError(
+                f"CB tag '{cb}' contains barcodes with unexpected lengths; "
+                f"expected {barcode_length}+{barcode_length} bases"
+            )
+    else:
+        expected_length = barcode_length * 2
+        if len(cb) != expected_length:
+            raise ValueError(
+                f"CB tag '{cb}' has length {len(cb)}; "
+                f"expected {expected_length} without a separator"
+            )
+        barcode1 = cb[:barcode_length]
+        barcode2 = cb[barcode_length:]
+
+    barcode1 = barcode1.upper()
+    barcode2 = barcode2.upper()
     try:
         index1 = barcode_map[barcode1]
         index2 = barcode_map[barcode2]
@@ -244,7 +261,7 @@ def write_spot_manifest(
             for index2, barcode2 in entries:
                 handle.write(
                     f"{index1}_{index2}\t{index1}\t{index2}\t"
-                    f"{barcode1}\t{barcode2}\t{barcode1}{barcode2}\n"
+                    f"{barcode1}\t{barcode2}\t{barcode1}+{barcode2}\n"
                 )
 
 
