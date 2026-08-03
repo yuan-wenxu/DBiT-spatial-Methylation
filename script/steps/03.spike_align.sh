@@ -33,12 +33,20 @@ require_index_directory() {
     fi
 }
 
-if [[ $# -ne 2 ]]; then
-    echo "Usage: 03.spike_align.sh <assay> <raw_fastq_folder>" >&2
+if (( $# < 2 || $# > 3 )); then
+    echo "Usage: 03.spike_align.sh <assay> <raw_fastq_folder> [--dry-run]" >&2
     exit 1
 fi
 assay=$1
 raw_path=$2
+dry_run=false
+if (( $# == 3 )); then
+    if [[ $3 != --dry-run ]]; then
+        echo "[dbitm] spike-align: unknown argument: $3" >&2
+        exit 1
+    fi
+    dry_run=true
+fi
 case "$assay" in
     taps|taps-v2|emseq) ;;
     *) echo "[dbitm] spike-align: unsupported assay: $assay" >&2; exit 1 ;;
@@ -122,8 +130,12 @@ raw_abs=$(realpath "$raw_path")
 final_dir=$(dirname "$raw_abs")/dbitm
 barcode_dir=$final_dir/barcode
 if [[ ! -d "$barcode_dir" ]]; then
-    echo "[dbitm] spike-align: barcode output directory not found: $barcode_dir" >&2
-    exit 1
+    if [[ "$dry_run" == true ]]; then
+        echo "[dbitm] spike-align: dry-run expects future barcode output directory: $barcode_dir"
+    else
+        echo "[dbitm] spike-align: barcode output directory not found: $barcode_dir" >&2
+        exit 1
+    fi
 fi
 
 use_scratch=false
@@ -143,6 +155,26 @@ if [[ "$aligner" == biscuit ]]; then
     echo "[dbitm] biscuit directional mode: $BISCUIT_DIRECTIONAL_MODE"
 fi
 echo "[dbitm] output directory: $final_dir/spike_align"
+
+if [[ "$dry_run" == true ]]; then
+    if [[ -n ${SCRATCH_ROOT:-} && "$SCRATCH_ROOT" != /* ]]; then
+        echo "[dbitm] spike-align: SCRATCH_ROOT must be an absolute path or empty" >&2
+        exit 1
+    fi
+    declare -a dry_r1_files=()
+    if [[ -d "$barcode_dir" ]]; then
+        shopt -s nullglob
+        dry_r1_files=("$barcode_dir"/*.R1.spike-in.fastq.gz)
+        shopt -u nullglob
+    fi
+    echo "[dbitm] dry-run: no files will be written"
+    echo "[dbitm] discovered chunks: ${#dry_r1_files[@]}"
+    echo "[dbitm] expected input: $barcode_dir/*.R1.spike-in.fastq.gz"
+    echo "[dbitm] planned command: $aligner -> $final_dir/spike_align"
+    [[ -z ${SCRATCH_ROOT:-} ]] || echo "[dbitm] planned scratch root: $SCRATCH_ROOT"
+    echo "====== dbitm spike-align dry-run finished ======"
+    exit 0
+fi
 
 if [[ -n ${SCRATCH_ROOT:-} ]]; then
     if [[ "$SCRATCH_ROOT" != /* ]]; then

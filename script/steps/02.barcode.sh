@@ -17,12 +17,20 @@ enable_cleanup() {
     trap 'exit 129' HUP
 }
 
-if [[ $# -ne 2 ]]; then
-    echo "Usage: 02.barcode.sh <assay> <raw_fastq_folder>" >&2
+if (( $# < 2 || $# > 3 )); then
+    echo "Usage: 02.barcode.sh <assay> <raw_fastq_folder> [--dry-run]" >&2
     exit 1
 fi
 assay=$1
 raw_path=$2
+dry_run=false
+if (( $# == 3 )); then
+    if [[ $3 != --dry-run ]]; then
+        echo "[dbitm] barcode: unknown argument: $3" >&2
+        exit 1
+    fi
+    dry_run=true
+fi
 case "$assay" in
     taps|taps-v2|emseq) ;;
     *) echo "[dbitm] barcode: unsupported assay: $assay" >&2; exit 1 ;;
@@ -53,9 +61,13 @@ fastp_dir=$final_dir/fastp
 input_r1=$fastp_dir/R1.filtered.fastq.gz
 input_r2=$fastp_dir/R2.filtered.fastq.gz
 if [[ ! -f "$input_r1" || ! -f "$input_r2" ]]; then
-    echo "[dbitm] barcode: fastp outputs not found under: $fastp_dir" >&2
-    echo "[dbitm] barcode: expected R1.filtered.fastq.gz and R2.filtered.fastq.gz" >&2
-    exit 1
+    if [[ "$dry_run" == true ]]; then
+        echo "[dbitm] barcode: dry-run expects future fastp outputs under: $fastp_dir"
+    else
+        echo "[dbitm] barcode: fastp outputs not found under: $fastp_dir" >&2
+        echo "[dbitm] barcode: expected R1.filtered.fastq.gz and R2.filtered.fastq.gz" >&2
+        exit 1
+    fi
 fi
 
 barcode_whitelist=${BARCODE_WHITELIST:-$REPO_DIR/docs/barcodes/barcodes50.tsv}
@@ -119,6 +131,18 @@ if [[ "$assay" == taps-v2 ]]; then
 fi
 echo "[dbitm] compression step: $BARCODE_COMPRESSION_STEP"
 echo "[dbitm] output directory: $final_dir/barcode"
+
+if [[ "$dry_run" == true ]]; then
+    if [[ -n ${SCRATCH_ROOT:-} && "$SCRATCH_ROOT" != /* ]]; then
+        echo "[dbitm] barcode: SCRATCH_ROOT must be an absolute path or empty" >&2
+        exit 1
+    fi
+    echo "[dbitm] dry-run: no files will be written"
+    echo "[dbitm] planned command: 02.extract_bc.py -> $final_dir/barcode"
+    [[ -z ${SCRATCH_ROOT:-} ]] || echo "[dbitm] planned scratch root: $SCRATCH_ROOT"
+    echo "====== dbitm barcode dry-run finished ======"
+    exit 0
+fi
 
 if [[ -n ${SCRATCH_ROOT:-} ]]; then
     if [[ "$SCRATCH_ROOT" != /* ]]; then

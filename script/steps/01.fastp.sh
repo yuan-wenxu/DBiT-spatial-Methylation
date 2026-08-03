@@ -17,11 +17,20 @@ enable_cleanup() {
     trap 'exit 129' HUP
 }
 
-if [[ $# -ne 2 ]]; then
-    echo "Usage: fastp.sh <assay> <raw_fastq_folder>" >&2; exit 1;
+if (( $# < 2 || $# > 3 )); then
+    echo "Usage: 01.fastp.sh <assay> <raw_fastq_folder> [--dry-run]" >&2
+    exit 1
 fi
 assay=$1
 raw_path=$2
+dry_run=false
+if (( $# == 3 )); then
+    if [[ $3 != --dry-run ]]; then
+        echo "[dbitm] fastp: unknown argument: $3" >&2
+        exit 1
+    fi
+    dry_run=true
+fi
 if [[ ! -d "$raw_path" ]]; then
     echo "[dbitm] fastp: FASTQ directory not found: $raw_path" >&2
     exit 1
@@ -54,6 +63,53 @@ echo "[dbitm] input directory: $raw_abs"
 echo "[dbitm] config: ${config_file}"
 echo "[dbitm] threads: $FASTP_THREADS"
 echo "[dbitm] output directory: $final_dir/fastp"
+
+if [[ "$dry_run" == true ]]; then
+    if [[ -n ${SCRATCH_ROOT:-} && "$SCRATCH_ROOT" != /* ]]; then
+        echo "[dbitm] fastp: SCRATCH_ROOT must be an absolute path or empty" >&2
+        exit 1
+    fi
+    declare -a dry_fastq_candidates=()
+    declare -a dry_fastq_files=()
+    shopt -s nullglob nocaseglob
+    dry_fastq_candidates=(
+        "$raw_abs"/*.fastq.gz
+        "$raw_abs"/*.fq.gz
+        "$raw_abs"/*.fastq
+        "$raw_abs"/*.fq
+    )
+    shopt -u nullglob nocaseglob
+    for path in "${dry_fastq_candidates[@]}"; do
+        [[ -f "$path" ]] && dry_fastq_files+=("$path")
+    done
+    if (( ${#dry_fastq_files[@]} != 2 )); then
+        echo "[dbitm] fastp: input directory must contain exactly two FASTQ files, found ${#dry_fastq_files[@]}: $raw_abs" >&2
+        exit 1
+    fi
+    dry_r1=
+    dry_r2=
+    for path in "${dry_fastq_files[@]}"; do
+        filename=$(basename "$path")
+        if [[ "$filename" =~ (^|[^[:alnum:]])[Rr]1([^[:alnum:]]|$) ]]; then
+            [[ -z "$dry_r1" ]] || { echo "[dbitm] fastp: input directory contains two R1 FASTQ files" >&2; exit 1; }
+            dry_r1=$path
+        elif [[ "$filename" =~ (^|[^[:alnum:]])[Rr]2([^[:alnum:]]|$) ]]; then
+            [[ -z "$dry_r2" ]] || { echo "[dbitm] fastp: input directory contains two R2 FASTQ files" >&2; exit 1; }
+            dry_r2=$path
+        else
+            echo "[dbitm] fastp: FASTQ filename must contain an independent R1 or R2 token: $filename" >&2
+            exit 1
+        fi
+    done
+    [[ -n "$dry_r1" && -n "$dry_r2" ]] || { echo "[dbitm] fastp: input directory must contain one R1 and one R2 FASTQ file" >&2; exit 1; }
+    echo "[dbitm] dry-run: no files will be written"
+    echo "[dbitm] input R1: $dry_r1"
+    echo "[dbitm] input R2: $dry_r2"
+    echo "[dbitm] planned command: fastp -> $final_dir/fastp"
+    [[ -z ${SCRATCH_ROOT:-} ]] || echo "[dbitm] planned scratch root: $SCRATCH_ROOT"
+    echo "====== dbitm fastp dry-run finished ======"
+    exit 0
+fi
 
 if [[ -n ${SCRATCH_ROOT:-} ]]; then
     if [[ "$SCRATCH_ROOT" != /* ]]; then

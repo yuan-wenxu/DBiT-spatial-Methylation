@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
     local status=${1:-1}
     cat <<'EOF'
-Usage: dbitm.sh <assay> <step> --input <path> [--config <path>]
+Usage: dbitm.sh <assay> <step> --input <path> [--config <path>] [--dry-run]
 
 Main control script for DBiT-spatial-Methylation pipeline.
 
@@ -13,6 +13,7 @@ Arguments:
   step           Pipeline step: fastp | barcode | align | spike-align | pool | mbias | call | all
   --input PATH   Raw FASTQ directory path
   --config PATH  Optional config file (default: config/dbitm.config.sh)
+  --dry-run      Validate and print the execution plan without writing outputs
   -h, --help     Show this help message and exit
 
 Execution mode is controlled by RUN_MODE in the config file:
@@ -26,6 +27,7 @@ Examples:
   dbitm.sh taps fastp --input /data/raw
   dbitm.sh emseq align --input /data/raw --config my_config.sh
   dbitm.sh taps spike-align --input /data/raw --config my_config.sh
+  dbitm.sh taps all --input /data/raw --config my_config.sh --dry-run
   dbitm.sh emseq all --input /data/raw --config my_config.sh
 EOF
     exit "$status"
@@ -73,6 +75,7 @@ fi
 # ── parse optional arguments ──
 input=""
 config=""
+dry_run=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -83,6 +86,10 @@ while [[ $# -gt 0 ]]; do
         --config)
             config=$2
             shift 2
+            ;;
+        --dry-run)
+            dry_run=true
+            shift
             ;;
         -h|--help)
             usage 0
@@ -126,6 +133,7 @@ export DBITM_CONFIG=$config
 
 echo "[dbitm] assay: $assay | step: $step | input: $input"
 echo "[dbitm] config: $config"
+echo "[dbitm] dry-run: $dry_run"
 
 source "$config"
 
@@ -145,7 +153,11 @@ run_step_local() {
     local step_script
     step_script=$(get_step_script "$step_name")
     echo "[dbitm] running $step_name directly..."
-    "$step_script" "$assay" "$input"
+    if [[ "$dry_run" == true ]]; then
+        "$step_script" "$assay" "$input" --dry-run
+    else
+        "$step_script" "$assay" "$input"
+    fi
 }
 
 SUBMITTED_JOB_ID=
@@ -206,6 +218,14 @@ submit_step() {
         'export DBITM_PROJECT_ROOT=%q DBITM_CONFIG=%q; %q %q %q' \
         "$REPO_DIR" "$config" "$step_script" "$assay" "$input"
 
+    if [[ "$dry_run" == true ]]; then
+        printf '[dbitm] dry-run sbatch:'
+        printf ' %q' sbatch "${sbatch_args[@]}" "--wrap=$wrapped_command"
+        printf '\n'
+        SUBMITTED_JOB_ID=dryrun_$step_name
+        return 0
+    fi
+
     echo "[dbitm] submitting $step_name via sbatch (job-name=$job_name cpus=$threads mem=$mem time=$time dependency=${dependency:-none})..."
     submission=$(sbatch "${sbatch_args[@]}" --wrap="$wrapped_command")
     job_id=${submission%%;*}
@@ -223,7 +243,11 @@ run_all_local() {
     for step_name in "${ALL_STEPS[@]}"; do
         run_step_local "$step_name"
     done
-    echo "[dbitm] complete pipeline finished successfully"
+    if [[ "$dry_run" == true ]]; then
+        echo "[dbitm] complete local dry-run finished successfully"
+    else
+        echo "[dbitm] complete pipeline finished successfully"
+    fi
 }
 
 submit_all_hpc() {
@@ -256,12 +280,16 @@ submit_all_hpc() {
     submit_step call "$mbias_job_id"
     call_job_id=$SUBMITTED_JOB_ID
 
-    echo "[dbitm] complete pipeline submitted successfully"
+    if [[ "$dry_run" == true ]]; then
+        echo "[dbitm] complete HPC submission dry-run finished successfully"
+    else
+        echo "[dbitm] complete pipeline submitted successfully"
+    fi
     echo "[dbitm] job IDs: fastp=$fastp_job_id barcode=$barcode_job_id align=$align_job_id spike-align=$spike_align_job_id pool=$pool_job_id mbias=$mbias_job_id call=$call_job_id"
 }
 
 if [[ "$RUN_MODE" == hpc ]]; then
-    if ! command -v sbatch >/dev/null 2>&1; then
+    if [[ "$dry_run" == false ]] && ! command -v sbatch >/dev/null 2>&1; then
         echo "[dbitm] error: sbatch executable not found" >&2
         exit 1
     fi

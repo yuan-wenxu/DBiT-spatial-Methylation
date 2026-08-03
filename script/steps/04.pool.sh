@@ -17,12 +17,20 @@ enable_cleanup() {
     trap 'exit 129' HUP
 }
 
-if [[ $# -ne 2 ]]; then
-    echo "Usage: 04.pool.sh <assay> <raw_fastq_folder>" >&2
+if (( $# < 2 || $# > 3 )); then
+    echo "Usage: 04.pool.sh <assay> <raw_fastq_folder> [--dry-run]" >&2
     exit 1
 fi
 assay=$1
 raw_path=$2
+dry_run=false
+if (( $# == 3 )); then
+    if [[ $3 != --dry-run ]]; then
+        echo "[dbitm] pool: unknown argument: $3" >&2
+        exit 1
+    fi
+    dry_run=true
+fi
 case "$assay" in
     taps|taps-v2|emseq) ;;
     *) echo "[dbitm] pool: unsupported assay: $assay" >&2; exit 1 ;;
@@ -55,16 +63,24 @@ final_dir=$(dirname "$raw_abs")/dbitm
 align_dir=$final_dir/align
 spike_align_dir=$final_dir/spike_align
 if [[ ! -d "$align_dir" ]]; then
-    echo "[dbitm] pool: align output directory not found: $align_dir" >&2
-    exit 1
+    if [[ "$dry_run" == true ]]; then
+        echo "[dbitm] pool: dry-run expects future align output directory: $align_dir"
+    else
+        echo "[dbitm] pool: align output directory not found: $align_dir" >&2
+        exit 1
+    fi
 fi
 
 shopt -s nullglob
 cb_bams=("$align_dir"/*.cb.bam)
 shopt -u nullglob
 if (( ${#cb_bams[@]} == 0 )); then
-    echo "[dbitm] pool: no .cb.bam files found under: $align_dir" >&2
-    exit 1
+    if [[ "$dry_run" == true ]]; then
+        echo "[dbitm] pool: dry-run found no existing .cb.bam files under: $align_dir"
+    else
+        echo "[dbitm] pool: no .cb.bam files found under: $align_dir" >&2
+        exit 1
+    fi
 fi
 
 declare -a spike_names=(lambda puc19)
@@ -87,6 +103,19 @@ echo "[dbitm] align directory: $align_dir"
 echo "[dbitm] spike-in BAM files found: ${#source_spike_bams[@]}"
 echo "[dbitm] config: $config_file"
 echo "[dbitm] output directory: $final_dir/pooled"
+
+if [[ "$dry_run" == true ]]; then
+    if [[ -n ${SCRATCH_ROOT:-} && "$SCRATCH_ROOT" != /* ]]; then
+        echo "[dbitm] pool: SCRATCH_ROOT must be an absolute path or empty" >&2
+        exit 1
+    fi
+    echo "[dbitm] dry-run: no files will be written"
+    echo "[dbitm] sort memory per thread: $sort_mem"
+    echo "[dbitm] planned command: samtools cat/sort/index -> $final_dir/pooled"
+    [[ -z ${SCRATCH_ROOT:-} ]] || echo "[dbitm] planned scratch root: $SCRATCH_ROOT"
+    echo "====== dbitm pool dry-run finished ======"
+    exit 0
+fi
 
 if [[ -n ${SCRATCH_ROOT:-} ]]; then
     if [[ "$SCRATCH_ROOT" != /* ]]; then

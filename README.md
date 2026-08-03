@@ -113,7 +113,7 @@ individually and omit `spike-align`.
 The command format is:
 
 ```text
-dbitm <assay> <step> --input <FASTQ_directory> [--config <config_file>]
+dbitm <assay> <step> --input <FASTQ_directory> [--config <config_file>] [--dry-run]
 ```
 
 Supported assays:
@@ -134,6 +134,14 @@ dbitm emseq all --input /path/to/sample/fastq
 
 With `RUN_MODE=local`, the steps run sequentially in the current process. With
 `RUN_MODE=hpc`, they are submitted to SLURM with the required dependencies.
+
+Use `--dry-run` to validate configuration and print the execution plan without
+writing pipeline outputs. In HPC mode, this prints the `sbatch` commands and
+dependencies without submitting jobs:
+
+```bash
+dbitm taps all --input /path/to/sample/fastq --dry-run
+```
 
 Run individual steps when needed:
 

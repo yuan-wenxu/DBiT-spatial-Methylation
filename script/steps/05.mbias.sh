@@ -17,12 +17,20 @@ enable_cleanup() {
     trap 'exit 129' HUP
 }
 
-if [[ $# -ne 2 ]]; then
-    echo "Usage: 05.mbias.sh <assay> <raw_fastq_folder>" >&2
+if (( $# < 2 || $# > 3 )); then
+    echo "Usage: 05.mbias.sh <assay> <raw_fastq_folder> [--dry-run]" >&2
     exit 1
 fi
 assay=$1
 raw_path=$2
+dry_run=false
+if (( $# == 3 )); then
+    if [[ $3 != --dry-run ]]; then
+        echo "[dbitm] mbias: unknown argument: $3" >&2
+        exit 1
+    fi
+    dry_run=true
+fi
 case "$assay" in
     taps|taps-v2|emseq) ;;
     *) echo "[dbitm] mbias: unsupported assay: $assay" >&2; exit 1 ;;
@@ -93,37 +101,48 @@ if [[ ! -f "$cutoff_script" ]]; then
     exit 1
 fi
 if [[ ! -d "$pooled_dir" ]]; then
-    echo "[dbitm] mbias: pooled output directory not found: $pooled_dir" >&2
-    echo "[dbitm] mbias: run the pool step first." >&2
-    exit 1
+    if [[ "$dry_run" == true ]]; then
+        echo "[dbitm] mbias: dry-run expects future pooled output directory: $pooled_dir"
+    else
+        echo "[dbitm] mbias: pooled output directory not found: $pooled_dir" >&2
+        echo "[dbitm] mbias: run the pool step first." >&2
+        exit 1
+    fi
 fi
 
 use_scratch=false
-if [[ -n ${SCRATCH_ROOT:-} ]]; then
-    if [[ "$SCRATCH_ROOT" != /* ]]; then
+log_path=/dev/null
+if [[ "$dry_run" == true ]]; then
+    if [[ -n ${SCRATCH_ROOT:-} && "$SCRATCH_ROOT" != /* ]]; then
         echo "[dbitm] mbias: SCRATCH_ROOT must be an absolute path or empty" >&2
         exit 1
     fi
-    echo "[dbitm] scratch root: $SCRATCH_ROOT"
-    mkdir -p "$SCRATCH_ROOT"
-    scratch_root=$(realpath "$SCRATCH_ROOT")
-    run_id=${SLURM_JOB_ID:-mbias_$$}
-    scratch_run=$scratch_root/dbitm/$run_id
-    scratch_input=$scratch_run/pooled
-    scratch_references=$scratch_run/references
-    run_output=$scratch_run/mbias
-    use_scratch=true
-    enable_cleanup
-    mkdir -p "$scratch_input" "$scratch_references" "$run_output"
-    if [[ -d "$output_dir" ]]; then
-        echo "[dbitm] copying existing M-bias outputs to scratch: $run_output"
-        cp -a "$output_dir/." "$run_output/"
+else
+    if [[ -n ${SCRATCH_ROOT:-} ]]; then
+        if [[ "$SCRATCH_ROOT" != /* ]]; then
+            echo "[dbitm] mbias: SCRATCH_ROOT must be an absolute path or empty" >&2
+            exit 1
+        fi
+        echo "[dbitm] scratch root: $SCRATCH_ROOT"
+        mkdir -p "$SCRATCH_ROOT"
+        scratch_root=$(realpath "$SCRATCH_ROOT")
+        run_id=${SLURM_JOB_ID:-mbias_$$}
+        scratch_run=$scratch_root/dbitm/$run_id
+        scratch_input=$scratch_run/pooled
+        scratch_references=$scratch_run/references
+        run_output=$scratch_run/mbias
+        use_scratch=true
+        enable_cleanup
+        mkdir -p "$scratch_input" "$scratch_references" "$run_output"
+        if [[ -d "$output_dir" ]]; then
+            echo "[dbitm] copying existing M-bias outputs to scratch: $run_output"
+            cp -a "$output_dir/." "$run_output/"
+        fi
     fi
+    mkdir -p "$run_output"
+    log_path=$run_output/mbias.log
+    : > "$log_path"
 fi
-
-mkdir -p "$run_output"
-log_path=$run_output/mbias.log
-: > "$log_path"
 
 echo "====== dbitm mbias ======"
 echo "[dbitm] assay: $assay"
@@ -164,6 +183,15 @@ run_mbias_target() {
     local scratch_bam scratch_reference
     local target_tsv=$run_output/$label.mbias.tsv
     local target_png=$run_output/$label.mbias.png
+
+    if [[ "$dry_run" == true ]]; then
+        validate_reference "$label" "$reference_path"
+        echo "[dbitm] dry-run target: $label"
+        echo "[dbitm] dry-run BAM: $bam_path"
+        echo "[dbitm] dry-run reference: $reference_path"
+        echo "[dbitm] dry-run sampling: fraction=$subsample_fraction max-records=$max_records"
+        return 0
+    fi
 
     if [[ ! -f "$bam_path" ]]; then
         echo "[dbitm] mbias: pooled BAM not found ($label): $bam_path" >&2
@@ -270,6 +298,12 @@ if [[ "$use_scratch" == true ]]; then
 fi
 
 echo "[dbitm] mbias targets completed: $target_count"
-echo "[dbitm] mbias log: $output_dir/mbias.log"
-echo "[dbitm] mbias result: $output_dir"
-echo "====== dbitm mbias finished ======"
+if [[ "$dry_run" == true ]]; then
+    echo "[dbitm] dry-run: no files will be written"
+    [[ -z ${SCRATCH_ROOT:-} ]] || echo "[dbitm] planned scratch root: $SCRATCH_ROOT"
+    echo "====== dbitm mbias dry-run finished ======"
+else
+    echo "[dbitm] mbias log: $output_dir/mbias.log"
+    echo "[dbitm] mbias result: $output_dir"
+    echo "====== dbitm mbias finished ======"
+fi

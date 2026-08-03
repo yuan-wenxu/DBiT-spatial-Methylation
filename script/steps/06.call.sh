@@ -17,12 +17,20 @@ enable_cleanup() {
     trap 'exit 129' HUP
 }
 
-if [[ $# -ne 2 ]]; then
-    echo "Usage: 06.call.sh <assay> <raw_fastq_folder>" >&2
+if (( $# < 2 || $# > 3 )); then
+    echo "Usage: 06.call.sh <assay> <raw_fastq_folder> [--dry-run]" >&2
     exit 1
 fi
 assay=$1
 raw_path=$2
+dry_run=false
+if (( $# == 3 )); then
+    if [[ $3 != --dry-run ]]; then
+        echo "[dbitm] call: unknown argument: $3" >&2
+        exit 1
+    fi
+    dry_run=true
+fi
 case "$assay" in
     taps|taps-v2) ;;
     *) echo "[dbitm] call: unsupported assay: $assay" >&2; exit 1 ;;
@@ -48,9 +56,13 @@ pooled_bam=$final_dir/pooled/pooled.cb.bam
 caller_script=$REPO_DIR/script/steps/python/06.methy_caller_taps.py
 
 if [[ ! -f "$pooled_bam" ]]; then
-    echo "[dbitm] call: pooled BAM not found: $pooled_bam" >&2
-    echo "[dbitm] call: run the pool step first." >&2
-    exit 1
+    if [[ "$dry_run" == true ]]; then
+        echo "[dbitm] call: dry-run expects future pooled BAM: $pooled_bam"
+    else
+        echo "[dbitm] call: pooled BAM not found: $pooled_bam" >&2
+        echo "[dbitm] call: run the pool step first." >&2
+        exit 1
+    fi
 fi
 if [[ ! -f "$caller_script" ]]; then
     echo "[dbitm] call: caller script not found: $caller_script" >&2
@@ -117,16 +129,29 @@ if (( ${#cutoff_targets[@]} == 0 )); then
 fi
 
 declare -a cutoff_paths=()
+declare -a missing_cutoff_targets=()
 for cutoff_target in "${cutoff_targets[@]}"; do
     cutoff_path=$cutoff_dir/$cutoff_target.mbias.cutoffs.tsv
     if [[ ! -f "$cutoff_path" ]]; then
-        echo "[dbitm] call: M-bias cutoff file not found ($cutoff_target): $cutoff_path" >&2
-        echo "[dbitm] call: run the mbias step first." >&2
-        exit 1
+        if [[ "$dry_run" == true ]]; then
+            echo "[dbitm] call: dry-run expects future M-bias cutoff ($cutoff_target): $cutoff_path"
+            missing_cutoff_targets+=("$cutoff_target")
+            continue
+        else
+            echo "[dbitm] call: M-bias cutoff file not found ($cutoff_target): $cutoff_path" >&2
+            echo "[dbitm] call: run the mbias step first." >&2
+            exit 1
+        fi
     fi
     cutoff_paths+=("$cutoff_path")
 done
-if ! trim_values=$(awk -F '\t' '
+if (( ${#missing_cutoff_targets[@]} > 0 )); then
+    call_r1_left_trim=auto
+    call_r1_right_trim=auto
+    call_r2_left_trim=auto
+    call_r2_right_trim=auto
+else
+    if ! trim_values=$(awk -F '\t' '
     FNR == 1 { next }
     $1 == "R1" {
         if ($7 !~ /^[0-9]+$/ || $8 !~ /^[0-9]+$/) invalid = 1
@@ -160,23 +185,24 @@ if ! trim_values=$(awk -F '\t' '
             r2_left_source, r2_right_source
     }
 ' "${cutoff_paths[@]}"); then
-    echo "[dbitm] call: invalid M-bias cutoff file under: $cutoff_dir" >&2
-    exit 1
-fi
-IFS=$'\t' read -r \
-    call_r1_left_trim call_r1_right_trim \
-    call_r2_left_trim call_r2_right_trim \
-    r1_left_source r1_right_source r2_left_source r2_right_source \
-    <<< "$trim_values"
-for trim_name in \
-    call_r1_left_trim call_r1_right_trim call_r2_left_trim call_r2_right_trim
-do
-    trim_value=${!trim_name:-}
-    if [[ ! "$trim_value" =~ ^[0-9]+$ ]]; then
-        echo "[dbitm] call: invalid or missing $trim_name under: $cutoff_dir" >&2
+        echo "[dbitm] call: invalid M-bias cutoff file under: $cutoff_dir" >&2
         exit 1
     fi
-done
+    IFS=$'\t' read -r \
+        call_r1_left_trim call_r1_right_trim \
+        call_r2_left_trim call_r2_right_trim \
+        r1_left_source r1_right_source r2_left_source r2_right_source \
+        <<< "$trim_values"
+    for trim_name in \
+        call_r1_left_trim call_r1_right_trim call_r2_left_trim call_r2_right_trim
+    do
+        trim_value=${!trim_name:-}
+        if [[ ! "$trim_value" =~ ^[0-9]+$ ]]; then
+            echo "[dbitm] call: invalid or missing $trim_name under: $cutoff_dir" >&2
+            exit 1
+        fi
+    done
+fi
 
 use_scratch=false
 run_bam=$pooled_bam
@@ -190,11 +216,25 @@ echo "[dbitm] pooled BAM: $pooled_bam"
 echo "[dbitm] chromosomes: $CALL_CHROMOSOMES"
 caller_context_mode=$CALL_CONTEXT_MODE
 echo "[dbitm] context mode: $caller_context_mode"
-echo "[dbitm] M-bias cutoff files: ${#cutoff_paths[@]}"
+echo "[dbitm] M-bias cutoff files: ${#cutoff_paths[@]}/${#cutoff_targets[@]}"
 echo "[dbitm] combined trimming: R1=${call_r1_left_trim},${call_r1_right_trim} R2=${call_r2_left_trim},${call_r2_right_trim}"
-echo "[dbitm] cutoff sources: R1-left=$(basename "$r1_left_source") R1-right=$(basename "$r1_right_source") R2-left=$(basename "$r2_left_source") R2-right=$(basename "$r2_right_source")"
+if (( ${#missing_cutoff_targets[@]} == 0 )); then
+    echo "[dbitm] cutoff sources: R1-left=$(basename "$r1_left_source") R1-right=$(basename "$r1_right_source") R2-left=$(basename "$r2_left_source") R2-right=$(basename "$r2_right_source")"
+fi
 echo "[dbitm] config: $config_file"
 echo "[dbitm] output directory: $final_dir/coverage"
+
+if [[ "$dry_run" == true ]]; then
+    if [[ -n ${SCRATCH_ROOT:-} && "$SCRATCH_ROOT" != /* ]]; then
+        echo "[dbitm] call: SCRATCH_ROOT must be an absolute path or empty" >&2
+        exit 1
+    fi
+    echo "[dbitm] dry-run: no files will be written"
+    echo "[dbitm] planned command: 06.methy_caller_taps.py -> $final_dir/coverage"
+    [[ -z ${SCRATCH_ROOT:-} ]] || echo "[dbitm] planned scratch root: $SCRATCH_ROOT"
+    echo "====== dbitm call dry-run finished ======"
+    exit 0
+fi
 
 if [[ -n ${SCRATCH_ROOT:-} ]]; then
     if [[ "$SCRATCH_ROOT" != /* ]]; then
