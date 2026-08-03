@@ -10,7 +10,7 @@ Main control script for DBiT-spatial-Methylation pipeline.
 
 Arguments:
   assay          Assay type: taps | taps-v2 | emseq
-  step           Pipeline step: fastp | barcode | align | spike-align | pool | call | all
+  step           Pipeline step: fastp | barcode | align | spike-align | pool | mbias | call | all
   --input PATH   Raw FASTQ directory path
   --config PATH  Optional config file (default: config/dbitm.config.sh)
   -h, --help     Show this help message and exit
@@ -20,7 +20,7 @@ Execution mode is controlled by RUN_MODE in the config file:
   RUN_MODE=hpc     Submit step via sbatch
 
 The all step runs/submits:
-  fastp -> barcode -> (align + spike-align) -> pool -> call
+  fastp -> barcode -> (align + spike-align) -> pool -> mbias -> call
 
 Examples:
   dbitm.sh taps fastp --input /data/raw
@@ -42,9 +42,10 @@ declare -A STEP_SCRIPTS=(
     [align]=03.align.sh
     [spike-align]=03.spike_align.sh
     [pool]=04.pool.sh
-    [call]=05.call.sh
+    [mbias]=05.mbias.sh
+    [call]=06.call.sh
 )
-ALL_STEPS=(fastp barcode align spike-align pool call)
+ALL_STEPS=(fastp barcode align spike-align pool mbias call)
 
 # ── parse positional arguments ──
 case "${1:-}" in
@@ -227,7 +228,7 @@ run_all_local() {
 
 submit_all_hpc() {
     local fastp_job_id barcode_job_id align_job_id spike_align_job_id
-    local pool_job_id call_job_id step_name
+    local pool_job_id mbias_job_id call_job_id step_name
 
     echo "[dbitm] submitting complete pipeline with Slurm dependencies..."
     for step_name in "${ALL_STEPS[@]}"; do
@@ -249,11 +250,14 @@ submit_all_hpc() {
     submit_step pool "$align_job_id:$spike_align_job_id"
     pool_job_id=$SUBMITTED_JOB_ID
 
-    submit_step call "$pool_job_id"
+    submit_step mbias "$pool_job_id"
+    mbias_job_id=$SUBMITTED_JOB_ID
+
+    submit_step call "$mbias_job_id"
     call_job_id=$SUBMITTED_JOB_ID
 
     echo "[dbitm] complete pipeline submitted successfully"
-    echo "[dbitm] job IDs: fastp=$fastp_job_id barcode=$barcode_job_id align=$align_job_id spike-align=$spike_align_job_id pool=$pool_job_id call=$call_job_id"
+    echo "[dbitm] job IDs: fastp=$fastp_job_id barcode=$barcode_job_id align=$align_job_id spike-align=$spike_align_job_id pool=$pool_job_id mbias=$mbias_job_id call=$call_job_id"
 }
 
 if [[ "$RUN_MODE" == hpc ]]; then

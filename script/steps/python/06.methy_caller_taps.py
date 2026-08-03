@@ -24,7 +24,9 @@ from typing import Dict, List, Optional, Set, TextIO, Tuple
 import pysam
 
 # properly-paired primary alignment flags for paired-end data
-PAIRED_FLAGS: Set[int] = {99, 147, 83, 163}
+TOP_FLAGS: Set[int] = {99, 147}
+BOT_FLAGS: Set[int] = {83, 163}
+PAIRED_FLAGS: Set[int] = TOP_FLAGS | BOT_FLAGS
 
 # forward-strand CH contexts and their reverse-complement mapping
 CH_FORWARD_CONTEXTS: Set[str] = {"CA", "CC", "CT"}
@@ -124,10 +126,6 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         type=int,
         default=8,
         help="Worker processes for intervals within one chromosome. Default: 8.",
-    )
-    parser.add_argument(
-        "--verbose", action="store_true",
-        help="Verbose logging.",
     )
     parser.add_argument(
         "--dry-run", action="store_true",
@@ -349,16 +347,26 @@ def count_cg_column(
                        r1_left, r1_right, r2_left, r2_right):
             continue
         dinuc = (seq[qpos] + seq[next_qpos]).upper()
+        # pos is the forward-strand C; pos + 1 is the reference G that
+        # represents the complementary-strand C.
+        if dinuc == "TG":
+            target_pos = pos
+            value_index = 0
+        elif dinuc == "CA":
+            target_pos = pos + 1
+            value_index = 0
+        elif dinuc == "CG":
+            target_pos = pos if record.flag in TOP_FLAGS else pos + 1
+            value_index = 1
+        else:
+            continue
         try:
             cb = record.get_tag(cb_tag)
         except KeyError:
             continue
 
-        spot = cg_counts.setdefault(cb, {}).setdefault(pos, [0, 0])
-        if dinuc in ("TG", "CA"):
-            spot[0] += 1  # methylated
-        elif dinuc == "CG":
-            spot[1] += 1  # unmethylated
+        spot = cg_counts.setdefault(cb, {}).setdefault(target_pos, [0, 0])
+        spot[value_index] += 1
 
 
 def get_forward_index(record: pysam.AlignedSegment, query_pos: int,
@@ -639,11 +647,10 @@ def process_chromosome(
     chromosome_part_dir.mkdir(parents=True)
     results: List[BatchResult] = []
 
-    if args.verbose:
-        print(
-            f"[methy-caller] chrom={chrom} length={chromosome_length} "
-            f"batches={len(intervals)} workers={min(args.jobs, len(intervals))}"
-        )
+    print(
+        f"[methy-caller] chrom={chrom} length={chromosome_length} "
+        f"batches={len(intervals)} workers={min(args.jobs, len(intervals))}"
+    )
 
     worker_args = (
         args.bam,
@@ -806,12 +813,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                 total_cpg_cov += cc
                 total_ch_proc += hp
                 total_ch_cov += hc
-                if args.verbose:
-                    print(
-                        f"[methy-caller] chrom={chrom} merged "
-                        f"cpg-processed={cp} cpg-covered={cc} "
-                        f"ch-processed={hp} ch-covered={hc}"
-                    )
+                print(
+                    f"[methy-caller] chrom={chrom} merged "
+                    f"cpg-processed={cp} cpg-covered={cc} "
+                    f"ch-processed={hp} ch-covered={hc}"
+                )
         for final_path, temp_path in output_paths.items():
             os.replace(temp_path, final_path)
         os.replace(manifest_temp, manifest_path)

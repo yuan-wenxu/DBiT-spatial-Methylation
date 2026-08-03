@@ -143,13 +143,14 @@ dbitm taps barcode --input /path/to/sample/fastq
 dbitm taps align --input /path/to/sample/fastq
 dbitm taps spike-align --input /path/to/sample/fastq
 dbitm taps pool --input /path/to/sample/fastq
+dbitm taps mbias --input /path/to/sample/fastq
 dbitm taps call --input /path/to/sample/fastq
 ```
 
 The required order is:
 
 ```text
-fastp -> barcode -> (align + spike-align) -> pool -> call
+fastp -> barcode -> (align + spike-align) -> pool -> mbias -> call
 ```
 
 Use another configuration file with:
@@ -171,21 +172,9 @@ sample/
     ├── align/
     ├── spike_align/
     ├── pooled/
-    │   ├── pooled.cb.bam
-    │   ├── pooled.cb.bam.bai
-    │   ├── pooled.lambda.bam
-    │   └── pooled.puc19.bam
+    ├── mbias/
     └── coverage/
-        ├── call.log
-        ├── spot_manifest.tsv
-        └── host/
-```
 
-TAPS/TAPS-v2 spot coverage files use whitelist indices such as
-`host/00/00_00.CG.cov` and `host/00/00_00.CH.cov`. Depending on the selected
-context mode, only CG or CH files may be produced. `spot_manifest.tsv` is
-created for TAPS/TAPS-v2. EM-seq coverage files currently use the CB barcode
-sequence as the filename. Spike-in BAMs are present only for configured
-references.
+```
 
 Run `dbitm --help` to view the current command options.
