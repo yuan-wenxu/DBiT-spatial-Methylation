@@ -98,7 +98,7 @@ RUN_MODE=hpc                 # hpc or local
 SCRATCH_ROOT=/path/to/scratch
 BARCODE_WHITELIST=           # empty uses docs/barcodes/barcodes50.tsv
 CALL_CONTEXT_MODE=both       # cg, ch, or both
-CALL_CG_STRAND_MODE=merged # separate or merged; Cabernet forces separate
+CALL_CG_STRAND_MODE=merged   # separate or merged; Cabernet forces separate
 CALL_CHROMOSOMES=chr1,chr2
 ```
 
@@ -156,12 +156,13 @@ dbitm taps spike-align --input /path/to/sample/fastq
 dbitm taps pool --input /path/to/sample/fastq
 dbitm taps mbias --input /path/to/sample/fastq
 dbitm taps call --input /path/to/sample/fastq
+dbitm taps spike-call --input /path/to/sample/fastq
 ```
 
 The required order is:
 
 ```text
-fastp -> barcode -> (align + spike-align) -> pool -> mbias -> call
+fastp -> barcode -> (align + spike-align) -> pool -> mbias -> call -> spike-call
 ```
 
 Use another configuration file with:
