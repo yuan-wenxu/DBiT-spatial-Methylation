@@ -157,12 +157,13 @@ dbitm taps pool --input /path/to/sample/fastq
 dbitm taps mbias --input /path/to/sample/fastq
 dbitm taps call --input /path/to/sample/fastq
 dbitm taps spike-call --input /path/to/sample/fastq
+dbitm taps summary --input /path/to/sample/fastq
 ```
 
 The required order is:
 
 ```text
-fastp -> barcode -> (align + spike-align) -> pool -> mbias -> call -> spike-call
+fastp -> barcode -> (align + spike-align) -> pool -> mbias -> call -> spike-call -> summary
 ```
 
 Use another configuration file with:
@@ -185,8 +186,8 @@ sample/
     ├── spike_align/
     ├── pooled/
     ├── mbias/
-    └── coverage/
-
+    ├── coverage/
+    └── summary/
 ```
 
 Run `dbitm --help` to view the current command options.
