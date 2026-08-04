@@ -27,25 +27,40 @@ import pysam
 
 
 VALID_FLAGS = {83, 99, 147, 163}
-HEATMAP_SPECS = (
-    ("reads", "reads_heatmap.png", "Reads per Spot", "Reads", "viridis", None),
-    (
-        "cpg_site_count",
-        "cpg_site_count_heatmap.png",
-        "CpG Sites per Spot",
-        "CpG sites",
-        "magma",
-        None,
-    ),
-    (
-        "mean_methylation",
-        "mean_methylation_heatmap.png",
-        "Mean Methylation per Spot",
-        "Mean methylation (%)",
-        "coolwarm",
-        100.0,
-    ),
-)
+CONTEXT_SPECS = {
+    "cg": {
+        "suffix": "CG",
+        "mean_field": "mean_methylation",
+        "site_field": "cpg_site_count",
+        "site_heatmap": "cpg_site_count_heatmap.png",
+        "site_title": "CpG Sites per Spot",
+        "site_label": "CpG sites",
+        "mean_heatmap": "mean_methylation_heatmap.png",
+        "mean_violin": "mean_methylation_violin.png",
+        "mean_title": "Mean CpG Methylation per Spot",
+        "violin_title": "Spot Mean CpG Methylation Distribution",
+        "host_mean_field": "host_spot_mean_methylation",
+        "host_median_field": "host_spot_median_cpg_sites",
+        "mito_mean_field": "host_mito_mean_methylation",
+        "spike_mean_suffix": "mean_methylation",
+    },
+    "ch": {
+        "suffix": "CH",
+        "mean_field": "mean_ch_methylation",
+        "site_field": "ch_site_count",
+        "site_heatmap": "ch_site_count_heatmap.png",
+        "site_title": "CH Sites per Spot",
+        "site_label": "CH sites",
+        "mean_heatmap": "mean_ch_methylation_heatmap.png",
+        "mean_violin": "mean_ch_methylation_violin.png",
+        "mean_title": "Mean CH Methylation per Spot",
+        "violin_title": "Spot Mean CH Methylation Distribution",
+        "host_mean_field": "host_spot_mean_ch_methylation",
+        "host_median_field": "host_spot_median_ch_sites",
+        "mito_mean_field": "host_mito_mean_ch_methylation",
+        "spike_mean_suffix": "mean_ch_methylation",
+    },
+}
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
@@ -56,6 +71,12 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--output-dir")
     parser.add_argument("--cb-tag", default="CB")
     parser.add_argument("--min-mapping-quality", type=int, default=10)
+    parser.add_argument(
+        "--context-mode",
+        choices=("cg", "ch", "both"),
+        default="cg",
+        help="Coverage contexts to summarize (default: cg).",
+    )
     parser.add_argument("--spike-in-name", action="append", default=[])
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
@@ -227,45 +248,48 @@ def parse_barcoded_reads(path: Path) -> Optional[int]:
 
 
 def summarize_spots(
-    cov_paths: list[Path],
+    context_cov_paths: dict[str, list[Path]],
     spot_counts: dict[str, int],
     coordinates: dict[str, tuple[str, str]],
 ) -> list[dict[str, str]]:
-    cov_stats: dict[str, Optional[tuple[float, int]]] = {}
-    for path in cov_paths:
-        spot = path.name.removesuffix(".CG.cov")
-        cov_stats[spot] = parse_cov_stats(path)
-    observed_spots = sorted(set(cov_stats) | set(spot_counts))
+    context_stats: dict[str, dict[str, Optional[tuple[float, int]]]] = {}
+    observed_spots = set(coordinates) | set(spot_counts)
+    for context, cov_paths in context_cov_paths.items():
+        suffix = str(CONTEXT_SPECS[context]["suffix"])
+        cov_stats: dict[str, Optional[tuple[float, int]]] = {}
+        for path in cov_paths:
+            spot = path.name.removesuffix(f".{suffix}.cov")
+            cov_stats[spot] = parse_cov_stats(path)
+        context_stats[context] = cov_stats
+        observed_spots.update(cov_stats)
+
     rows: list[dict[str, str]] = []
-    for spot in observed_spots:
+    for spot in sorted(observed_spots):
         x_index, y_index = coordinates.get(spot, ("NA", "NA"))
-        stats = cov_stats.get(spot)
-        mean_methylation = stats[0] if stats else None
-        cpg_count = stats[1] if stats else None
-        rows.append(
-            {
-                "X_index": x_index,
-                "Y_index": y_index,
-                "spot": spot,
-                "mean_methylation": format_float(mean_methylation),
-                "cpg_site_count": format_int(cpg_count),
-                "reads": str(spot_counts.get(spot, 0)),
-            }
-        )
+        row = {"X_index": x_index, "Y_index": y_index, "spot": spot}
+        for context in context_cov_paths:
+            spec = CONTEXT_SPECS[context]
+            stats = context_stats[context].get(spot)
+            row[str(spec["mean_field"])] = format_float(stats[0] if stats else None)
+            row[str(spec["site_field"])] = format_int(stats[1] if stats else None)
+        row["reads"] = str(spot_counts.get(spot, 0))
+        rows.append(row)
     return rows
 
 
-def mean_from_rows(rows: list[dict[str, str]]) -> tuple[Optional[float], Optional[float]]:
+def mean_from_rows(
+    rows: list[dict[str, str]], mean_field: str, site_field: str
+) -> tuple[Optional[float], Optional[float]]:
     weighted_sum = 0.0
     total_sites = 0
     counts: list[int] = []
     for row in rows:
-        if row["mean_methylation"] == "NA" or row["cpg_site_count"] == "NA":
+        if row[mean_field] == "NA" or row[site_field] == "NA":
             continue
-        site_count = int(row["cpg_site_count"])
+        site_count = int(row[site_field])
         if site_count <= 0:
             continue
-        weighted_sum += float(row["mean_methylation"]) * site_count
+        weighted_sum += float(row[mean_field]) * site_count
         total_sites += site_count
         counts.append(site_count)
     mean = weighted_sum / total_sites if total_sites else None
@@ -350,10 +374,12 @@ def write_heatmap(
         temporary.unlink(missing_ok=True)
 
 
-def write_methylation_violin(rows: list[dict[str, str]], output: Path) -> None:
+def write_methylation_violin(
+    rows: list[dict[str, str]], output: Path, field: str, title: str
+) -> None:
     values: list[float] = []
     for row in rows:
-        text = row["mean_methylation"]
+        text = row[field]
         if text == "NA":
             continue
         value = float(text)
@@ -361,7 +387,6 @@ def write_methylation_violin(rows: list[dict[str, str]], output: Path) -> None:
             values.append(value)
 
     figure, axis = plt.subplots(figsize=(4, 5))
-    title = "Spot Mean Methylation Distribution"
     if not values:
         axis.axis("off")
         axis.text(0.5, 0.5, "No valid data", ha="center", va="center")
@@ -410,17 +435,33 @@ def main(argv: Optional[list[str]] = None) -> int:
     coverage_dir = work_dir / "coverage"
     manifest_path = coverage_dir / "spot_manifest.tsv"
     host_bam = work_dir / "pooled" / "pooled.cb.bam"
-    host_cov_paths = sorted((coverage_dir / "host").rglob("*.CG.cov"))
-    spike_names = list(dict.fromkeys(name.strip() for name in args.spike_in_name if name.strip()))
-    if not spike_names:
-        spike_names = sorted(
-            path.name.removesuffix(".CG.cov")
-            for path in coverage_dir.glob("*.CG.cov")
-            if path.name != "host_mito.CG.cov"
+    contexts = ["cg", "ch"] if args.context_mode == "both" else [args.context_mode]
+    host_cov_paths = {
+        context: sorted(
+            (coverage_dir / "host").rglob(
+                f"*.{CONTEXT_SPECS[context]['suffix']}.cov"
+            )
         )
+        for context in contexts
+    }
+    spike_names = list(
+        dict.fromkeys(name.strip() for name in args.spike_in_name if name.strip())
+    )
+    if not spike_names:
+        discovered_spikes: set[str] = set()
+        for context in contexts:
+            suffix = str(CONTEXT_SPECS[context]["suffix"])
+            discovered_spikes.update(
+                path.name.removesuffix(f".{suffix}.cov")
+                for path in coverage_dir.glob(f"*.{suffix}.cov")
+                if path.name != f"host_mito.{suffix}.cov"
+            )
+        spike_names = sorted(discovered_spikes)
 
     print(f"[summary] work-dir={work_dir}")
-    print(f"[summary] host-cov-count={len(host_cov_paths)}")
+    print(f"[summary] context-mode={args.context_mode}")
+    for context in contexts:
+        print(f"[summary] host-{context}-cov-count={len(host_cov_paths[context])}")
     print(f"[summary] spike-names={','.join(spike_names) if spike_names else 'none'}")
     print(f"[summary] output-dir={output_dir}")
     if args.dry_run:
@@ -437,25 +478,37 @@ def main(argv: Optional[list[str]] = None) -> int:
             raise ValueError("no per-spot coverage or CB-tagged reads were found")
         output_dir.mkdir(parents=True, exist_ok=True)
         per_spot_path = output_dir / "per_spot_summary.tsv"
+        per_spot_fields = ["X_index", "Y_index", "spot"]
+        for context in contexts:
+            spec = CONTEXT_SPECS[context]
+            per_spot_fields.extend([str(spec["mean_field"]), str(spec["site_field"])])
+        per_spot_fields.append("reads")
         write_tsv(
             per_spot_path,
-            ["X_index", "Y_index", "spot", "mean_methylation", "cpg_site_count", "reads"],
+            per_spot_fields,
             per_spot_rows,
         )
 
-        host_mean, host_median_sites = mean_from_rows(per_spot_rows)
-        mito_stats = parse_cov_stats(coverage_dir / "host_mito.CG.cov")
-        sample_row: dict[str, str] = {
-            "saturation_rate": "NA",
-            "host_spot_mean_methylation": format_float(host_mean),
-            "host_spot_median_cpg_sites": format_float(host_median_sites),
-            "host_mito_mean_methylation": format_float(mito_stats[0] if mito_stats else None),
-        }
-        for spike_name in spike_names:
-            stats = parse_cov_stats(coverage_dir / f"{spike_name}.CG.cov")
-            sample_row[f"{spike_name}_mean_methylation"] = format_float(
-                stats[0] if stats else None
+        sample_row: dict[str, str] = {"saturation_rate": "NA"}
+        for context in contexts:
+            spec = CONTEXT_SPECS[context]
+            host_mean, host_median_sites = mean_from_rows(
+                per_spot_rows,
+                str(spec["mean_field"]),
+                str(spec["site_field"]),
             )
+            suffix = str(spec["suffix"])
+            mito_stats = parse_cov_stats(coverage_dir / f"host_mito.{suffix}.cov")
+            sample_row[str(spec["host_mean_field"])] = format_float(host_mean)
+            sample_row[str(spec["host_median_field"])] = format_float(host_median_sites)
+            sample_row[str(spec["mito_mean_field"])] = format_float(
+                mito_stats[0] if mito_stats else None
+            )
+            for spike_name in spike_names:
+                stats = parse_cov_stats(coverage_dir / f"{spike_name}.{suffix}.cov")
+                sample_row[f"{spike_name}_{spec['spike_mean_suffix']}"] = format_float(
+                    stats[0] if stats else None
+                )
         raw_reads = parse_fastp_reads(work_dir / "fastp" / "fastp.json")
         barcoded_reads = parse_barcoded_reads(work_dir / "barcode" / "stats.json")
         sample_row.update(
@@ -479,20 +532,41 @@ def main(argv: Optional[list[str]] = None) -> int:
             list(sample_row),
             [sample_row],
         )
-        for field, filename, title, label, cmap, vmax in HEATMAP_SPECS:
+        write_heatmap(
+            per_spot_rows,
+            "reads",
+            output_dir / "reads_heatmap.png",
+            "Reads per Spot",
+            "Reads",
+            "viridis",
+            None,
+        )
+        for context in contexts:
+            spec = CONTEXT_SPECS[context]
             write_heatmap(
                 per_spot_rows,
-                field,
-                output_dir / filename,
-                title,
-                label,
-                cmap,
-                vmax,
+                str(spec["site_field"]),
+                output_dir / str(spec["site_heatmap"]),
+                str(spec["site_title"]),
+                str(spec["site_label"]),
+                "magma",
+                None,
             )
-        write_methylation_violin(
-            per_spot_rows,
-            output_dir / "mean_methylation_violin.png",
-        )
+            write_heatmap(
+                per_spot_rows,
+                str(spec["mean_field"]),
+                output_dir / str(spec["mean_heatmap"]),
+                str(spec["mean_title"]),
+                f"Mean {context.upper()} methylation (%)",
+                "coolwarm",
+                100.0,
+            )
+            write_methylation_violin(
+                per_spot_rows,
+                output_dir / str(spec["mean_violin"]),
+                str(spec["mean_field"]),
+                str(spec["violin_title"]),
+            )
     except (OSError, ValueError) as error:
         print(f"[summary] error: {error}", file=sys.stderr)
         return 1

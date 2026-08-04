@@ -544,8 +544,10 @@ Entry points:
 - `script/steps/python/07.summary.py`
 
 The summary stage combines barcode statistics, fastp metrics, pooled BAM
-metrics, per-spot host CG coverage, and aggregate mitochondrial/spike-in CG
-coverage. It does not require or emit a sample-ID field.
+metrics, per-spot host coverage, and aggregate mitochondrial/spike-in coverage.
+It follows `CALL_CONTEXT_MODE`: `cg` summarizes CG files, `ch` summarizes CH
+files, and `both` summarizes both contexts. It does not require or emit a
+sample-ID field.
 
 ### 16.1 Inputs
 
@@ -555,28 +557,30 @@ The principal inputs are:
 - `barcode/stats.json`
 - `pooled/pooled.cb.bam`
 - `coverage/spot_manifest.tsv`
-- `coverage/host/*/*.CG.cov`
-- `coverage/host_mito.CG.cov`, when produced
-- `coverage/<spike>.CG.cov`, when produced
+- `coverage/host/*/*.<context>.cov`
+- `coverage/host_mito.<context>.cov`, when produced
+- `coverage/<spike>.<context>.cov`, when produced
 - corresponding pooled spike-in BAMs
 
-CH files are not currently included in the summary tables or plots.
+Here, `<context>` is `CG`, `CH`, or both according to `CALL_CONTEXT_MODE`.
 
 ### 16.2 Per-spot metrics
 
 `per_spot_summary.tsv` contains one row for every manifest spot, including spots
-with zero reads or zero CpG sites. It reports spatial indices, read counts,
-valid-orientation read counts, CpG site count, methylation sum, and mean CpG
-methylation.
+with zero reads or zero called sites. It always reports spatial indices and read
+counts. In CG mode it adds `mean_methylation` and `cpg_site_count`; in CH mode it
+adds `mean_ch_methylation` and `ch_site_count`; in both mode it adds all four
+context-specific fields.
 
 The mean is:
 
 ```text
-mean methylation = sum of per-site methylation fractions / number of CpG rows
+mean methylation = sum of per-site methylation percentages / number of context rows
 ```
 
-Each CpG row therefore has equal weight. This is not a read-depth-weighted ratio
-of total methylated observations to total observations.
+Each CG or CH row therefore has equal weight within its context. This is not a
+read-depth-weighted ratio of total methylated observations to total
+observations.
 
 ### 16.3 Sample-level metrics
 
@@ -586,12 +590,12 @@ of total methylated observations to total observations.
 - barcode-kept read pairs and reads
 - host BAM records and mapped reads
 - reads assigned to valid paired-end orientations
-- total host CpG rows and mean methylation
-- mitochondrial and spike-in reads, CpG rows, and mean methylation when present
+- host site counts and mean methylation for each selected context
+- mitochondrial and spike-in mean methylation for each selected context
 - saturation fields where supported
 
-The host-wide mean weights each spot mean by its CpG row count, which is
-equivalent to giving every spot-by-CpG output row equal weight.
+Within each context, the host-wide mean weights each spot mean by its site count,
+which is equivalent to giving every spot-by-site output row equal weight.
 
 Barcode-kept records are paired reads, so the reported kept-read count is twice
 the retained-pair count. BAM records are counted as individual alignments.
@@ -604,18 +608,31 @@ count of primary fragments.
 
 ### 16.4 Plots
 
-The stage creates four plots:
+The reads heatmap is always generated:
 
 ```text
-reads_per_spot.heatmap.png
-cpg_sites_per_spot.heatmap.png
-mean_methylation_per_spot.heatmap.png
-mean_methylation_per_spot.violin.png
+reads_heatmap.png
 ```
 
-Heatmap axes use the zero-based barcode indices from the spot manifest. The
-violin plot shows the distribution of mean CpG methylation across spots with at
-least one called CpG row.
+CG mode additionally generates:
+
+```text
+cpg_site_count_heatmap.png
+mean_methylation_heatmap.png
+mean_methylation_violin.png
+```
+
+CH mode additionally generates:
+
+```text
+ch_site_count_heatmap.png
+mean_ch_methylation_heatmap.png
+mean_ch_methylation_violin.png
+```
+
+Both mode generates all seven plots. Heatmap axes use the zero-based barcode
+indices from the spot manifest. Each violin plot shows the distribution of mean
+methylation across spots with at least one called site in that context.
 
 The complete summary output directory is:
 
@@ -623,12 +640,17 @@ The complete summary output directory is:
 summary/
 ├── per_spot_summary.tsv
 ├── sample_summary.tsv
-├── reads_per_spot.heatmap.png
-├── cpg_sites_per_spot.heatmap.png
-├── mean_methylation_per_spot.heatmap.png
-├── mean_methylation_per_spot.violin.png
+├── reads_heatmap.png
+├── cpg_site_count_heatmap.png
+├── mean_methylation_heatmap.png
+├── mean_methylation_violin.png
+├── ch_site_count_heatmap.png
+├── mean_ch_methylation_heatmap.png
+├── mean_ch_methylation_violin.png
 └── summary.log
 ```
+
+The CG or CH plot groups are omitted when that context is not selected.
 
 ## 17. Complete output layout
 
@@ -683,12 +705,10 @@ from a valid completed result.
 
 1. The pool stage currently names `lambda` and `puc19` explicitly even though
    the spike alignment configuration can describe other spike-ins.
-2. Summary statistics currently use CG coverage only; CH calling results are
-   retained as coverage files but are not summarized.
-3. Coverage `start` and `end` are equal point coordinates, not BED intervals.
-4. The summary mapped-read metric can include secondary or supplementary records
+2. Coverage `start` and `end` are equal point coordinates, not BED intervals.
+3. The summary mapped-read metric can include secondary or supplementary records
    if they meet its mapped, MAPQ, and `NH` conditions.
-5. Saturation may be reported as unavailable when the required calculation is
+4. Saturation may be reported as unavailable when the required calculation is
    not implemented for an input category.
 
 These constraints should be considered when extending the workflow or comparing

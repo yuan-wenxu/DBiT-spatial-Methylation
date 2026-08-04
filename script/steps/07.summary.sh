@@ -65,6 +65,12 @@ if [[ ! "$minimum_mapq" =~ ^[0-9]+$ ]]; then
     exit 1
 fi
 
+context_mode=${CALL_CONTEXT_MODE}
+case "$context_mode" in
+    cg|ch|both) ;;
+    *) echo "[dbitm] summary: CALL_CONTEXT_MODE must be cg, ch, or both" >&2; exit 1 ;;
+esac
+
 declare -a spike_names=()
 spike_declaration=$(declare -p CALL_SPIKE_IN_REFERENCES 2>/dev/null || true)
 if [[ -n "$spike_declaration" ]]; then
@@ -88,6 +94,7 @@ fi
 declare -a summary_args=(
     --work-dir "$final_dir"
     --min-mapping-quality "$minimum_mapq"
+    --context-mode "$context_mode"
 )
 for spike_name in "${spike_names[@]}"; do
     summary_args+=(--spike-in-name "$spike_name")
@@ -97,6 +104,7 @@ echo "====== dbitm summary ======"
 echo "[dbitm] assay: $assay"
 echo "[dbitm] work directory: $final_dir"
 echo "[dbitm] output directory: $output_dir"
+echo "[dbitm] context mode: $context_mode"
 echo "[dbitm] spike-ins: ${spike_names[*]:-none}"
 echo "[dbitm] config: $config_file"
 
