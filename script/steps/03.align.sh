@@ -32,7 +32,7 @@ if (( $# == 3 )); then
     dry_run=true
 fi
 case "$assay" in
-    taps|taps-v2|emseq) ;;
+    taps|taps-v2|emseq|cabernet) ;;
     *) echo "[dbitm] align: unsupported assay: $assay" >&2; exit 1 ;;
 esac
 if [[ ! -d "$raw_path" ]]; then
@@ -76,11 +76,11 @@ case "$assay" in
             exit 1
         fi
         ;;
-    emseq)
+    emseq|cabernet)
         aligner=biscuit
         reference=$BISCUIT_REFERENCE
         if [[ -z "$reference" ]]; then
-            echo "[dbitm] align: BISCUIT_REFERENCE is required for assay 'emseq'" >&2
+            echo "[dbitm] align: BISCUIT_REFERENCE is required for assay '$assay'" >&2
             exit 1
         fi
         ;;

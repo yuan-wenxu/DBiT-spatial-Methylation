@@ -32,7 +32,7 @@ if (( $# == 3 )); then
     dry_run=true
 fi
 case "$assay" in
-    taps|taps-v2|emseq) ;;
+    taps|taps-v2|emseq|cabernet) ;;
     *) echo "[dbitm] mbias: unsupported assay: $assay" >&2; exit 1 ;;
 esac
 if [[ ! -d "$raw_path" ]]; then

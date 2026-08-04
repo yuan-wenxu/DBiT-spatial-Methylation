@@ -11,9 +11,9 @@ declare -A BWA_SPIKE_IN_INDEXES=(
     [lambda]=""
     [puc19]=""
 )
-# EM-seq biscuit-indexed reference FASTA
+# EM-seq/Cabernet biscuit-indexed reference FASTA
 BISCUIT_REFERENCE=${BISCUIT_REFERENCE:-}
-# Absolute paths to spike-in biscuit indexes used by EM-seq align.
+# Absolute paths to spike-in biscuit indexes used by EM-seq/Cabernet align.
 # Bash equivalent of: {"lambda": "/path/to/index", "puc19": "/path/to/index"}
 declare -A BISCUIT_SPIKE_IN_INDEXES=(
     [lambda]=""
@@ -78,6 +78,7 @@ MBIAS_SAMPLING_SEED=${MBIAS_SAMPLING_SEED:-42}
 CALL_CHROMOSOMES=${CALL_CHROMOSOMES:-chr1,chr2,chr3,chr4,chr5,chr6,chr7,chr8,chr9,chr10,chr11,chr12,chr13,chr14,chr15,chr16,chr17,chr18,chr19,chrX}
 CALL_MITO_CHROMOSOMES=${CALL_MITO_CHROMOSOMES:-chrM}
 CALL_CONTEXT_MODE=${CALL_CONTEXT_MODE:-both} # Options: cg, ch, both
+CALL_CG_STRAND_MODE=${CALL_CG_STRAND_MODE:-merged} # Options: separate, merged; Cabernet forces separate
 CALL_MIN_BASE_QUALITY=${MBIAS_MIN_BASE_QUALITY}
 CALL_MIN_MAPPING_QUALITY=${MBIAS_MIN_MAPPING_QUALITY}
 CALL_MAX_DEPTH=${CALL_MAX_DEPTH:-50000}

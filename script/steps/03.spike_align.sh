@@ -48,7 +48,7 @@ if (( $# == 3 )); then
     dry_run=true
 fi
 case "$assay" in
-    taps|taps-v2|emseq) ;;
+    taps|taps-v2|emseq|cabernet) ;;
     *) echo "[dbitm] spike-align: unsupported assay: $assay" >&2; exit 1 ;;
 esac
 if [[ ! -d "$raw_path" ]]; then
@@ -82,7 +82,7 @@ case "$assay" in
         aligner=bwa
         index_variable=BWA_SPIKE_IN_INDEXES
         ;;
-    emseq)
+    emseq|cabernet)
         aligner=biscuit
         index_variable=BISCUIT_SPIKE_IN_INDEXES
         ;;

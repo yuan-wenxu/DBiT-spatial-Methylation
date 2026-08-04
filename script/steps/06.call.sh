@@ -32,7 +32,7 @@ if (( $# == 3 )); then
     dry_run=true
 fi
 case "$assay" in
-    taps|taps-v2) ;;
+    taps|taps-v2|emseq|cabernet) ;;
     *) echo "[dbitm] call: unsupported assay: $assay" >&2; exit 1 ;;
 esac
 if [[ ! -d "$raw_path" ]]; then
@@ -50,10 +50,25 @@ if [[ ! -f "$config_file" ]]; then
 fi
 source "$config_file"
 
+caller_context_mode=${CALL_CONTEXT_MODE:-both}
+case "$caller_context_mode" in
+    cg|ch|both) ;;
+    *) echo "[dbitm] call: CALL_CONTEXT_MODE must be cg, ch, or both" >&2; exit 1 ;;
+esac
+if [[ "$assay" == cabernet ]]; then
+    caller_cg_strand_mode=separate
+else
+    caller_cg_strand_mode=${CALL_CG_STRAND_MODE}
+fi
+case "$caller_cg_strand_mode" in
+    separate|merged) ;;
+    *) echo "[dbitm] call: CALL_CG_STRAND_MODE must be separate or merged" >&2; exit 1 ;;
+esac
+
 raw_abs=$(realpath "$raw_path")
 final_dir=$(dirname "$raw_abs")/dbitm
 pooled_bam=$final_dir/pooled/pooled.cb.bam
-caller_script=$REPO_DIR/script/steps/python/06.methy_caller_taps.py
+caller_script=$REPO_DIR/script/steps/python/06.methy_caller.py
 
 if [[ ! -f "$pooled_bam" ]]; then
     if [[ "$dry_run" == true ]]; then
@@ -214,8 +229,8 @@ echo "[dbitm] reference: $reference"
 echo "[dbitm] barcode whitelist: $barcode_whitelist"
 echo "[dbitm] pooled BAM: $pooled_bam"
 echo "[dbitm] chromosomes: $CALL_CHROMOSOMES"
-caller_context_mode=$CALL_CONTEXT_MODE
 echo "[dbitm] context mode: $caller_context_mode"
+echo "[dbitm] CG strand mode: $caller_cg_strand_mode"
 echo "[dbitm] M-bias cutoff files: ${#cutoff_paths[@]}/${#cutoff_targets[@]}"
 echo "[dbitm] combined trimming: R1=${call_r1_left_trim},${call_r1_right_trim} R2=${call_r2_left_trim},${call_r2_right_trim}"
 if (( ${#missing_cutoff_targets[@]} == 0 )); then
@@ -230,7 +245,7 @@ if [[ "$dry_run" == true ]]; then
         exit 1
     fi
     echo "[dbitm] dry-run: no files will be written"
-    echo "[dbitm] planned command: 06.methy_caller_taps.py -> $final_dir/coverage"
+    echo "[dbitm] planned command: 06.methy_caller.py -> $final_dir/coverage"
     [[ -z ${SCRATCH_ROOT:-} ]] || echo "[dbitm] planned scratch root: $SCRATCH_ROOT"
     echo "====== dbitm call dry-run finished ======"
     exit 0
@@ -263,12 +278,14 @@ mkdir -p "$run_output"
 echo "[dbitm] starting methylation calling..."
 pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default \
     python "$caller_script" \
+    --assay "$assay" \
     --bam "$run_bam" \
     --reference "$reference" \
     --out-dir "$run_output" \
     --barcode-whitelist "$barcode_whitelist" \
     --chromosomes "$CALL_CHROMOSOMES" \
     --context-mode "$caller_context_mode" \
+    --cg-strand-mode "$caller_cg_strand_mode" \
     --min-base-quality "$CALL_MIN_BASE_QUALITY" \
     --min-mapping-quality "$CALL_MIN_MAPPING_QUALITY" \
     --max-depth "$CALL_MAX_DEPTH" \

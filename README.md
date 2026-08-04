@@ -1,8 +1,8 @@
 # DBiT-spatial-Methylation
 
 DBiT-spatial-Methylation processes paired-end DBiT methylation sequencing data
-from TAPS, TAPS-v2, or EM-seq experiments. The command-line workflow supports
-local execution and SLURM submission.
+from TAPS, TAPS-v2, EM-seq, or Cabernet experiments. The command-line workflow
+supports local execution and SLURM submission.
 
 ## Input organization
 
@@ -47,7 +47,7 @@ pixi run -e default bwa index /path/to/genome.fa
 pixi run -e default samtools faidx /path/to/genome.fa
 ```
 
-For EM-seq:
+For EM-seq or Cabernet:
 
 ```bash
 pixi run -e default biscuit index /path/to/genome.fa
@@ -79,7 +79,7 @@ declare -A BWA_SPIKE_IN_INDEXES=(
 )
 ```
 
-For EM-seq:
+For EM-seq or Cabernet:
 
 ```bash
 BISCUIT_REFERENCE=/path/to/genome.fa
@@ -98,6 +98,7 @@ RUN_MODE=hpc                 # hpc or local
 SCRATCH_ROOT=/path/to/scratch
 BARCODE_WHITELIST=           # empty uses docs/barcodes/barcodes50.tsv
 CALL_CONTEXT_MODE=both       # cg, ch, or both
+CALL_CG_STRAND_MODE=merged # separate or merged; Cabernet forces separate
 CALL_CHROMOSOMES=chr1,chr2
 ```
 
@@ -122,6 +123,7 @@ Supported assays:
 taps
 taps-v2
 emseq
+cabernet
 ```
 
 Run the complete workflow:
@@ -130,6 +132,7 @@ Run the complete workflow:
 dbitm taps all --input /path/to/sample/fastq
 dbitm taps-v2 all --input /path/to/sample/fastq
 dbitm emseq all --input /path/to/sample/fastq
+dbitm cabernet all --input /path/to/sample/fastq
 ```
 
 With `RUN_MODE=local`, the steps run sequentially in the current process. With

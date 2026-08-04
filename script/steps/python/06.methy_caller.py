@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Methylation caller for DBiT TAPS/TAPS-v2 data.
+"""Methylation caller for DBiT TAPS/TAPS-v2, EM-seq, and Cabernet data.
 
 Reads a coordinate-sorted pooled BAM, performs pileup over reference CpG and
 CH positions, groups counts by spot (CB tag), and writes per-spot .CG.cov /
@@ -40,7 +40,15 @@ WORKER_CHROMOSOME_SEQUENCE: Optional[str] = None
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Methylation caller for DBiT TAPS/TAPS-v2 data."
+        description=(
+            "Methylation caller for DBiT TAPS/TAPS-v2, EM-seq, and Cabernet data."
+        )
+    )
+    parser.add_argument(
+        "--assay",
+        choices=("taps", "taps-v2", "emseq", "cabernet"),
+        required=True,
+        help="Methylation assay used to interpret converted bases.",
     )
     parser.add_argument(
         "-b", "--bam",
@@ -80,6 +88,16 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         choices=("cg", "ch", "both"),
         default="cg",
         help="Methylation context to call. Default: cg.",
+    )
+    parser.add_argument(
+        "--cg-strand-mode",
+        choices=("separate", "merged"),
+        default="separate",
+        help=(
+            "Write strand-specific CpG cytosines with a strand column, or "
+            "merge both strands at the forward C coordinate. Cabernet always "
+            "uses separate. Default: separate."
+        ),
     )
     parser.add_argument(
         "--min-base-quality",
@@ -310,16 +328,43 @@ def is_trimmed(
     return left_cycle <= left_trim or right_cycle <= right_trim
 
 
-# CG counters: per-spot → position → [methylated, unmethylated]
-CgCounts = Dict[str, Dict[int, Tuple[int, int]]]
+# CG counters: per-spot → position → [methylated, unmethylated, strand]
+CgCounts = Dict[str, Dict[int, List[object]]]
 # CH counters: per-spot → position → [methylated, unmethylated, context, strand]
 ChCounts = Dict[str, Dict[int, Tuple[int, int, str, str]]]
+
+
+def classify_cg_observation(
+    dinucleotide: str,
+    flag: int,
+    assay: str,
+) -> Optional[Tuple[bool, str]]:
+    """Return methylation status and cytosine strand for a CpG observation."""
+    if dinucleotide == "TG":
+        strand = "+"
+    elif dinucleotide == "CA":
+        strand = "-"
+    elif dinucleotide == "CG":
+        if flag in TOP_FLAGS:
+            strand = "+"
+        elif flag in BOT_FLAGS:
+            strand = "-"
+        else:
+            return None
+    else:
+        return None
+
+    converted = dinucleotide in {"TG", "CA"}
+    methylated = not converted if assay in {"emseq", "cabernet"} else converted
+    return methylated, strand
 
 
 def count_cg_column(
     pileup_col,
     cb_tag: str,
     cg_counts: CgCounts,
+    assay: str,
+    cg_strand_mode: str,
     r1_left: int, r1_right: int,
     r2_left: int, r2_right: int,
 ) -> None:
@@ -349,24 +394,26 @@ def count_cg_column(
         dinuc = (seq[qpos] + seq[next_qpos]).upper()
         # pos is the forward-strand C; pos + 1 is the reference G that
         # represents the complementary-strand C.
-        if dinuc == "TG":
-            target_pos = pos
-            value_index = 0
-        elif dinuc == "CA":
-            target_pos = pos + 1
-            value_index = 0
-        elif dinuc == "CG":
-            target_pos = pos if record.flag in TOP_FLAGS else pos + 1
-            value_index = 1
-        else:
+        observation = classify_cg_observation(dinuc, record.flag, assay)
+        if observation is None:
             continue
+        methylated, target_strand = observation
+        target_pos = (
+            pos
+            if target_strand == "+" or cg_strand_mode == "merged"
+            else pos + 1
+        )
+        value_index = 0 if methylated else 1
         try:
             cb = record.get_tag(cb_tag)
         except KeyError:
             continue
 
-        spot = cg_counts.setdefault(cb, {}).setdefault(target_pos, [0, 0])
-        spot[value_index] += 1
+        output_strand = target_strand if cg_strand_mode == "separate" else "."
+        spot = cg_counts.setdefault(cb, {}).setdefault(
+            target_pos, [0, 0, output_strand]
+        )
+        spot[value_index] = int(spot[value_index]) + 1
 
 
 def get_forward_index(record: pysam.AlignedSegment, query_pos: int,
@@ -376,12 +423,32 @@ def get_forward_index(record: pysam.AlignedSegment, query_pos: int,
     return query_pos
 
 
+def classify_ch_observation(
+    base: str,
+    strand: str,
+    assay: str,
+) -> Optional[Tuple[int, int]]:
+    """Return methylated and unmethylated increments for a CH observation."""
+    if strand == "+":
+        if base not in {"C", "T"}:
+            return None
+        retained = base == "C"
+    else:
+        if base not in {"G", "A"}:
+            return None
+        retained = base == "G"
+
+    methylated = retained if assay in {"emseq", "cabernet"} else not retained
+    return (1, 0) if methylated else (0, 1)
+
+
 def count_ch_column(
     pileup_col,
     ctx: str,
     strand: str,
     cb_tag: str,
     ch_counts: ChCounts,
+    assay: str,
     r1_left: int, r1_right: int,
     r2_left: int, r2_right: int,
 ) -> None:
@@ -412,19 +479,10 @@ def count_ch_column(
                 continue
             if fwd_seq[fwd_idx + 1].upper() != ctx[1]:
                 continue
-            if base == "T":
-                meth, unmeth = 1, 0
-            elif base == "C":
-                meth, unmeth = 0, 1
-            else:
-                continue
-        else:  # strand == "-"
-            if base == "A":
-                meth, unmeth = 1, 0
-            elif base == "G":
-                meth, unmeth = 0, 1
-            else:
-                continue
+        observation = classify_ch_observation(base, strand, assay)
+        if observation is None:
+            continue
+        meth, unmeth = observation
 
         try:
             cb = record.get_tag(cb_tag)
@@ -437,10 +495,19 @@ def count_ch_column(
         spot[1] += unmeth
 
 
-def format_cg_line(chrom: str, pos: int, meth: int, unmeth: int) -> str:
+def format_cg_line(
+    chrom: str,
+    pos: int,
+    meth: int,
+    unmeth: int,
+    strand: Optional[str] = None,
+) -> str:
     total = meth + unmeth
     pct = round((meth / total) * 100, 2) if total > 0 else 0.0
-    return f"{chrom}\t{pos + 1}\t{pos + 1}\t{pct:.2f}\t{meth}\t{unmeth}\n"
+    fields = [chrom, str(pos), str(pos), f"{pct:.2f}", str(meth), str(unmeth)]
+    if strand is not None:
+        fields.append(strand)
+    return "\t".join(fields) + "\n"
 
 
 def format_ch_line(chrom: str, pos: int, meth: int, unmeth: int,
@@ -448,7 +515,7 @@ def format_ch_line(chrom: str, pos: int, meth: int, unmeth: int,
     total = meth + unmeth
     pct = round((meth / total) * 100, 2) if total > 0 else 0.0
     return (
-        f"{chrom}\t{pos + 1}\t{pos + 1}\t{pct:.2f}\t{meth}\t{unmeth}\t"
+        f"{chrom}\t{pos}\t{pos}\t{pct:.2f}\t{meth}\t{unmeth}\t"
         f"{ctx}\t{strand}\n"
     )
 
@@ -459,6 +526,7 @@ def write_cg_part(
     part_path: Path,
     barcode_map: BarcodeMap,
     barcode_length: int,
+    cg_strand_mode: str,
 ) -> Tuple[int, int]:
     processed = 0
     covered = 0
@@ -470,12 +538,20 @@ def write_cg_part(
     with part_path.open("w", encoding="utf-8") as handle:
         for spot_id, pos_map in sorted(spot_maps):
             for pos in sorted(pos_map):
-                meth, unmeth = pos_map[pos]
+                meth, unmeth, strand = pos_map[pos]
+                meth_count = int(meth)
+                unmeth_count = int(unmeth)
+                strand_value = (
+                    str(strand) if cg_strand_mode == "separate" else None
+                )
+                cg_line = format_cg_line(
+                    chrom, pos, meth_count, unmeth_count, strand_value
+                )
                 handle.write(
-                    f"{spot_id}\t{format_cg_line(chrom, pos, meth, unmeth)}"
+                    f"{spot_id}\t{cg_line}"
                 )
                 processed += 1
-                covered += int(meth + unmeth > 0)
+                covered += int(meth_count + unmeth_count > 0)
     return processed, covered
 
 
@@ -517,7 +593,9 @@ def process_interval(
     stop: int,
     part_dir: str,
     cb_tag: str,
+    assay: str,
     context_mode: str,
+    cg_strand_mode: str,
     min_base_quality: int,
     min_mapping_quality: int,
     max_depth: int,
@@ -551,12 +629,15 @@ def process_interval(
             if is_cpg and context_mode in ("cg", "both"):
                 count_cg_column(
                     pileup_col, cb_tag, cg_counts,
+                    assay,
+                    cg_strand_mode,
                     r1_left, r1_right, r2_left, r2_right,
                 )
             if ch_target is not None and context_mode in ("ch", "both"):
                 ctx, strand = ch_target
                 count_ch_column(
                     pileup_col, ctx, strand, cb_tag, ch_counts,
+                    assay,
                     r1_left, r1_right, r2_left, r2_right,
                 )
 
@@ -564,7 +645,7 @@ def process_interval(
     cg_part = part_root / f"batch_{batch_index:06d}.CG.part"
     ch_part = part_root / f"batch_{batch_index:06d}.CH.part"
     cpg_processed, cpg_covered = write_cg_part(
-        cg_counts, chrom, cg_part, barcode_map, barcode_length
+        cg_counts, chrom, cg_part, barcode_map, barcode_length, cg_strand_mode
     )
     ch_processed, ch_covered = write_ch_part(
         ch_counts, chrom, ch_part, barcode_map, barcode_length
@@ -657,7 +738,9 @@ def process_chromosome(
         chrom,
         chromosome_part_dir,
         args.cb_tag,
+        args.assay,
         args.context_mode,
+        args.cg_strand_mode,
         args.min_base_quality,
         args.min_mapping_quality,
         args.max_depth,
@@ -726,14 +809,18 @@ def process_chromosome(
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
+    if args.assay == "cabernet":
+        args.cg_strand_mode = "separate"
 
     if args.dry_run:
+        print(f"[methy-caller] assay={args.assay}")
         print(f"[methy-caller] bam={args.bam}")
         print(f"[methy-caller] reference={args.reference}")
         print(f"[methy-caller] out-dir={args.out_dir}")
         print(f"[methy-caller] barcode-whitelist={args.barcode_whitelist}")
         print(f"[methy-caller] chromosomes={args.chromosomes}")
         print(f"[methy-caller] context-mode={args.context_mode}")
+        print(f"[methy-caller] cg-strand-mode={args.cg_strand_mode}")
         print(f"[methy-caller] dry-run=1")
         return 0
 
@@ -779,12 +866,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     manifest_temp = manifest_path.with_name(manifest_path.name + temp_suffix)
     write_spot_manifest(manifest_temp, barcode_entries)
 
+    print(f"[methy-caller] assay={args.assay}")
     print(f"[methy-caller] bam={args.bam}")
     print(f"[methy-caller] reference={args.reference}")
     print(f"[methy-caller] barcode-whitelist={args.barcode_whitelist}")
     print(f"[methy-caller] spots={len(barcode_entries) ** 2}")
     print(f"[methy-caller] chromosomes={len(chromosomes)}")
     print(f"[methy-caller] context-mode={args.context_mode}")
+    print(f"[methy-caller] cg-strand-mode={args.cg_strand_mode}")
     print(f"[methy-caller] interval-workers={args.jobs}")
     print(f"[methy-caller] out-dir={args.out_dir}")
 
@@ -796,7 +885,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     output_paths: Dict[Path, Path] = {}
     try:
         with tempfile.TemporaryDirectory(
-            prefix=".taps-call-parts.", dir=out_dir
+            prefix=".methylation-call-parts.", dir=out_dir
         ) as part_directory:
             for chromosome_index, chrom in enumerate(chromosomes):
                 cp, cc, hp, hc = process_chromosome(

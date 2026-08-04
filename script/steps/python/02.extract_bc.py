@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract DBiT barcodes in TAPS, TAPS-v2, or EMSeq mode."""
+"""Extract DBiT barcodes in TAPS, TAPS-v2, EM-seq, or Cabernet mode."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Extract DBiT barcodes with standard TAPS matching, TAPS-v2 "
-            "C/T-aware matching, or EMSeq C/T-aware matching."
+            "C/T-aware matching, or EM-seq/Cabernet C/T-aware matching."
         )
     )
     parser.add_argument(
@@ -35,7 +35,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--assay",
         dest="mode",
         required=True,
-        choices=("taps", "taps-v2", "emseq"),
+        choices=("taps", "taps-v2", "emseq", "cabernet"),
         help="Barcode extraction mode.",
     )
     parser.add_argument("r1", help="Input R1 FASTQ(.gz).")
@@ -106,7 +106,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=1,
         help=(
             "Maximum mismatches at non-C positions when locating the C/T-aware "
-            "insert-left in taps-v2 or emseq mode. Original C positions must "
+            "insert-left in taps-v2, emseq, or cabernet mode. Original C "
+            "positions must "
             "be C or T. Default: 1."
         ),
     )
@@ -508,7 +509,7 @@ def extract_record(
         len(sequence1_upper),
         config.barcode2_length + len(config.linker_bc) + 12 + 50,
     )
-    if config.mode == "emseq":
+    if config.mode in {"emseq", "cabernet"}:
         linker_position = find_c_t_pattern_in_window(
             sequence1_upper,
             config.linker_bc,
@@ -754,7 +755,7 @@ def build_extraction_config(args: argparse.Namespace) -> ExtractionConfig:
 
     barcode1_whitelist = read_whitelist(args.barcode1_whitelist)
     barcode2_whitelist = read_whitelist(args.barcode2_whitelist)
-    if args.mode == "emseq":
+    if args.mode in {"emseq", "cabernet"}:
         barcode1_whitelist = {
             convert_c_to_t(barcode) for barcode in barcode1_whitelist
         }
@@ -1008,7 +1009,7 @@ def main(argv: list[str] | None = None) -> int:
                 ),
             }
         )
-    elif args.mode == "emseq":
+    elif args.mode in {"emseq", "cabernet"}:
         stats.update(
             {
                 "barcode_whitelist_c_to_t_conversion": True,
