@@ -17,8 +17,8 @@ Arguments:
   -h, --help     Show this help message and exit
 
 Execution mode is controlled by RUN_MODE in the config file:
-  RUN_MODE=local   Run step directly (default)
-  RUN_MODE=hpc     Submit step via sbatch
+  RUN_MODE=local   Run step directly
+  RUN_MODE=hpc     Submit step via sbatch (default)
 
 The all step runs/submits:
   fastp -> barcode -> (align + spike-align) -> pool -> mbias -> call -> spike-call -> summary
