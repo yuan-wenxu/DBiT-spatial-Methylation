@@ -168,7 +168,8 @@ The main calling controls include:
 - `SPIKE_CALL_MODE`: `all`, `mito`, or `spike`
 - minimum mapping and base qualities
 - pileup maximum depth
-- genomic interval size
+- maximum genomic interval size; shorter chromosomes are divided into at
+  least `CALL_JOBS` intervals when their length permits
 - parallel caller job count
 
 Cabernet always uses `separate` CG strand mode, regardless of

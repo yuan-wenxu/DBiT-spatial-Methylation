@@ -121,7 +121,11 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         "--batch-size",
         type=int,
         default=10_000_000,
-        help="Genomic batch size in bp. Default: 10,000,000.",
+        help=(
+            "Maximum genomic batch size in bp. It is reduced per chromosome "
+            "when needed to keep interval workers occupied. Default: "
+            "10,000,000."
+        ),
     )
     parser.add_argument(
         "--r1-left-trim", type=int, default=0,
@@ -164,6 +168,18 @@ def validate_chromosomes(reference: str, chromosomes: List[str]) -> None:
         raise ValueError(
             f"chromosomes not found in reference '{reference}': {','.join(missing)}"
         )
+
+
+def effective_batch_size(
+    chromosome_length: int,
+    configured_batch_size: int,
+    jobs: int,
+) -> int:
+    """Return a batch size that creates at least one interval per worker."""
+    return min(
+        configured_batch_size,
+        max(1, chromosome_length // jobs),
+    )
 
 
 BarcodeMap = Dict[str, str]
@@ -718,10 +734,15 @@ def process_chromosome(
     WORKER_CHROMOSOME_SEQUENCE = sequence
 
     chromosome_length = len(sequence)
+    chrom_batch_size = effective_batch_size(
+        chromosome_length,
+        args.batch_size,
+        args.jobs,
+    )
     intervals = [
-        (batch_index, start, min(start + args.batch_size, chromosome_length))
+        (batch_index, start, min(start + chrom_batch_size, chromosome_length))
         for batch_index, start in enumerate(
-            range(0, chromosome_length, args.batch_size)
+            range(0, chromosome_length, chrom_batch_size)
         )
     ]
     chromosome_part_dir = part_root / f"{chromosome_index:03d}"
@@ -730,7 +751,8 @@ def process_chromosome(
 
     print(
         f"[methy-caller] chrom={chrom} length={chromosome_length} "
-        f"batches={len(intervals)} workers={min(args.jobs, len(intervals))}"
+        f"batch-size={chrom_batch_size} batches={len(intervals)} "
+        f"workers={min(args.jobs, len(intervals))}"
     )
 
     worker_args = (
