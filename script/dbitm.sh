@@ -186,6 +186,7 @@ submit_step() {
     local job_name_var threads_var partition_var mem_var time_var
     local job_name threads partition mem time
     local step_script wrapped_command submission job_id
+    local log_dir output_path error_path
     local -a sbatch_args
 
     validate_hpc_resources "$step_name"
@@ -203,14 +204,20 @@ submit_step() {
     time=${!time_var}
     step_script=$(get_step_script "$step_name")
 
+    log_dir=$(dirname "$input")/dbitm/logs
+    output_path=${SBATCH_OUTPUT:-%x_%j.out}
+    error_path=${SBATCH_ERROR:-%x_%j.err}
+    [[ "$output_path" == /* ]] || output_path=$log_dir/$output_path
+    [[ "$error_path" == /* ]] || error_path=$log_dir/$error_path
+
     sbatch_args=(
         --parsable
         --job-name="$job_name"
         --cpus-per-task="$threads"
         --mem="$mem"
         --time="$time"
-        --output="${SBATCH_OUTPUT:-%x_%j.out}"
-        --error="${SBATCH_ERROR:-%x_%j.err}"
+        --output="$output_path"
+        --error="$error_path"
     )
     [[ -n "$partition" ]] && sbatch_args+=(--partition="$partition")
     [[ "${SBATCH_REQUEUE:-}" == true ]] && sbatch_args+=(--requeue)
@@ -228,6 +235,7 @@ submit_step() {
         return 0
     fi
 
+    mkdir -p "$log_dir"
     echo "[dbitm] submitting $step_name via sbatch (job-name=$job_name cpus=$threads mem=$mem time=$time dependency=${dependency:-none})..."
     submission=$(sbatch "${sbatch_args[@]}" --wrap="$wrapped_command")
     job_id=${submission%%;*}

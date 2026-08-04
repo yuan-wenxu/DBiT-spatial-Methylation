@@ -87,6 +87,8 @@ CALL_BATCH_SIZE=${CALL_BATCH_SIZE:-10000000}
 CALL_JOBS=${CALL_JOBS:-16}
 
 # SLURM resource configuration
+# Relative output/error patterns are written under dbitm/logs for this input.
+# Absolute paths are used unchanged.
 SBATCH_OUTPUT=${SBATCH_OUTPUT:-%x_%j.out}
 SBATCH_ERROR=${SBATCH_ERROR:-%x_%j.err}
 SBATCH_REQUEUE=${SBATCH_REQUEUE:-true}
