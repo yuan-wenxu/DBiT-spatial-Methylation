@@ -162,7 +162,6 @@ as `00` through `49`.
 The main calling controls include:
 
 - `CALL_CONTEXT_MODE`: `cg`, `ch`, or `both`
-- `CALL_CG_STRAND_MODE`: `separate` or `merged`
 - `CALL_CHROMOSOMES`: host chromosomes to call
 - `CALL_MITO_CHROMOSOMES`: mitochondrial contigs to call
 - `SPIKE_CALL_MODE`: `all`, `mito`, or `spike`
@@ -171,9 +170,6 @@ The main calling controls include:
 - maximum genomic interval size; shorter chromosomes are divided into at
   least `CALL_JOBS` intervals when their length permits
 - parallel caller job count
-
-Cabernet always uses `separate` CG strand mode, regardless of
-`CALL_CG_STRAND_MODE`.
 
 ## 6. Read and coordinate data model
 
@@ -220,10 +216,8 @@ Coverage output uses zero-based genomic coordinates. The `start` and `end`
 columns both contain the selected cytosine-representation coordinate; they are
 not a BED half-open interval.
 
-For merged CpG calls, both strands are placed at the forward-strand reference C.
-For separate CpG calls, plus-strand evidence is placed at that C, while
-minus-strand evidence is placed at the paired reference G and marked with its
-strand. The G coordinate therefore represents the complementary-strand C.
+For CpG calls, evidence from both strands is merged at the forward-strand
+reference C.
 
 ## 7. Assay-specific methylation chemistry
 
@@ -472,12 +466,10 @@ The caller builds `dbitm/coverage/spot_manifest.tsv` from every whitelist pair,
 including spots with no called sites. Spot coordinates are zero-based barcode
 indices.
 
-### 14.3 CpG strand modes
+### 14.3 CpG strand handling
 
-`CALL_CG_STRAND_MODE=merged` combines plus- and minus-strand evidence at the
-forward reference C coordinate. `separate` retains two strand-specific records:
-plus evidence at the forward C and minus evidence at the paired G. Cabernet
-always uses `separate` mode.
+The caller combines plus- and minus-strand CpG evidence at the forward reference
+C coordinate for every assay.
 
 ### 14.4 Per-spot output
 
@@ -491,12 +483,12 @@ coverage/host/<X>/<X>_<Y>.CH.cov
 CG files contain:
 
 ```text
-chrom  start  end  methylation_percent  methylated_count  unmethylated_count  [strand]
+chrom  start  end  methylation_percent  methylated_count  unmethylated_count
 ```
 
-The optional strand field is present in separate mode. CH files additionally
-record context and strand. Methylation percentage is calculated from the
-methylated and unmethylated observations for that output row.
+CH files additionally record context and strand. Methylation percentage is
+calculated from the methylated and unmethylated observations for that output
+row.
 
 ## 15. Stage 6B: mitochondrial and spike-in calling
 

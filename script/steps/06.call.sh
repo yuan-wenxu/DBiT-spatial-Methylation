@@ -55,15 +55,6 @@ case "$caller_context_mode" in
     cg|ch|both) ;;
     *) echo "[dbitm] call: CALL_CONTEXT_MODE must be cg, ch, or both" >&2; exit 1 ;;
 esac
-if [[ "$assay" == cabernet ]]; then
-    caller_cg_strand_mode=separate
-else
-    caller_cg_strand_mode=${CALL_CG_STRAND_MODE}
-fi
-case "$caller_cg_strand_mode" in
-    separate|merged) ;;
-    *) echo "[dbitm] call: CALL_CG_STRAND_MODE must be separate or merged" >&2; exit 1 ;;
-esac
 
 raw_abs=$(realpath "$raw_path")
 final_dir=$(dirname "$raw_abs")/dbitm
@@ -230,7 +221,6 @@ echo "[dbitm] barcode whitelist: $barcode_whitelist"
 echo "[dbitm] pooled BAM: $pooled_bam"
 echo "[dbitm] chromosomes: $CALL_CHROMOSOMES"
 echo "[dbitm] context mode: $caller_context_mode"
-echo "[dbitm] CG strand mode: $caller_cg_strand_mode"
 echo "[dbitm] M-bias cutoff files: ${#cutoff_paths[@]}/${#cutoff_targets[@]}"
 echo "[dbitm] combined trimming: R1=${call_r1_left_trim},${call_r1_right_trim} R2=${call_r2_left_trim},${call_r2_right_trim}"
 if (( ${#missing_cutoff_targets[@]} == 0 )); then
@@ -285,7 +275,6 @@ pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default \
     --barcode-whitelist "$barcode_whitelist" \
     --chromosomes "$CALL_CHROMOSOMES" \
     --context-mode "$caller_context_mode" \
-    --cg-strand-mode "$caller_cg_strand_mode" \
     --min-base-quality "$CALL_MIN_BASE_QUALITY" \
     --min-mapping-quality "$CALL_MIN_MAPPING_QUALITY" \
     --max-depth "$CALL_MAX_DEPTH" \

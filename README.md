@@ -98,7 +98,6 @@ RUN_MODE=hpc                 # hpc or local
 SCRATCH_ROOT=/path/to/scratch
 BARCODE_WHITELIST=           # empty uses docs/barcodes/barcodes50.tsv
 CALL_CONTEXT_MODE=both       # cg, ch, or both
-CALL_CG_STRAND_MODE=merged   # separate or merged; Cabernet forces separate
 CALL_CHROMOSOMES=chr1,chr2
 ```
 

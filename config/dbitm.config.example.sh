@@ -78,7 +78,6 @@ MBIAS_SAMPLING_SEED=${MBIAS_SAMPLING_SEED:-42}
 CALL_CHROMOSOMES=${CALL_CHROMOSOMES:-chr1,chr2,chr3,chr4,chr5,chr6,chr7,chr8,chr9,chr10,chr11,chr12,chr13,chr14,chr15,chr16,chr17,chr18,chr19,chrX}
 CALL_MITO_CHROMOSOMES=${CALL_MITO_CHROMOSOMES:-chrM}
 CALL_CONTEXT_MODE=${CALL_CONTEXT_MODE:-both} # Options: cg, ch, both
-CALL_CG_STRAND_MODE=${CALL_CG_STRAND_MODE:-merged} # Options: separate, merged; Cabernet forces separate
 SPIKE_CALL_MODE=${SPIKE_CALL_MODE:-all} # Options: all, mito, spike
 CALL_MIN_BASE_QUALITY=${MBIAS_MIN_BASE_QUALITY}
 CALL_MIN_MAPPING_QUALITY=${MBIAS_MIN_MAPPING_QUALITY}
@@ -87,8 +86,6 @@ CALL_BATCH_SIZE=${CALL_BATCH_SIZE:-10000000}
 CALL_JOBS=${CALL_JOBS:-16}
 
 # SLURM resource configuration
-# Relative output/error patterns are written under dbitm/logs for this input.
-# Absolute paths are used unchanged.
 SBATCH_OUTPUT=${SBATCH_OUTPUT:-%x_%j.out}
 SBATCH_ERROR=${SBATCH_ERROR:-%x_%j.err}
 SBATCH_REQUEUE=${SBATCH_REQUEUE:-true}

@@ -46,9 +46,6 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--context-mode", choices=("cg", "ch", "both"), default="cg"
     )
-    parser.add_argument(
-        "--cg-strand-mode", choices=("separate", "merged"), default="separate"
-    )
     parser.add_argument("--min-base-quality", type=int, default=30)
     parser.add_argument("--min-mapping-quality", type=int, default=10)
     parser.add_argument("--max-depth", type=int, default=50_000)
@@ -61,8 +58,6 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
 
 
 def validate_args(args: argparse.Namespace) -> list[str]:
-    if args.assay == "cabernet":
-        args.cg_strand_mode = "separate"
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", args.output_name) is None:
         raise ValueError("--output-name must be filename-safe")
     chromosomes = SHARED.parse_chromosomes(args.chromosomes)
@@ -130,10 +125,8 @@ def count_cg_column(pileup_col, args: argparse.Namespace, counts) -> None:
         )
         if observation is None:
             continue
-        methylated, strand = observation
-        output_pos = pos if strand == "+" or args.cg_strand_mode == "merged" else pos + 1
-        output_strand = strand if args.cg_strand_mode == "separate" else "."
-        values = counts[(output_pos, output_strand)]
+        methylated, _ = observation
+        values = counts[pos]
         values[0 if methylated else 1] += 1
 
 
@@ -241,11 +234,10 @@ def write_outputs(args: argparse.Namespace, chromosomes: list[str]) -> tuple[int
                         bam, fasta, chromosome, args
                     )
                     if cg_handle is not None:
-                        for (pos, strand), (methylated, unmethylated) in sorted(cg_counts.items()):
-                            output_strand = strand if args.cg_strand_mode == "separate" else None
+                        for pos, (methylated, unmethylated) in sorted(cg_counts.items()):
                             cg_handle.write(
                                 SHARED.format_cg_line(
-                                    chromosome, pos, methylated, unmethylated, output_strand
+                                    chromosome, pos, methylated, unmethylated
                                 )
                             )
                             cg_lines += 1
@@ -291,7 +283,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(f"[spike-caller] output-name={args.output_name}")
     print(f"[spike-caller] chromosomes={','.join(chromosomes)}")
     print(f"[spike-caller] context-mode={args.context_mode}")
-    print(f"[spike-caller] cg-strand-mode={args.cg_strand_mode}")
     if args.dry_run:
         print("[spike-caller] dry-run=1")
         return 0

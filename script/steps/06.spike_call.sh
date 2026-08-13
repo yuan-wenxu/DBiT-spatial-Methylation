@@ -60,15 +60,6 @@ case "$caller_context_mode" in
     cg|ch|both) ;;
     *) echo "[dbitm] spike-call: CALL_CONTEXT_MODE must be cg, ch, or both" >&2; exit 1 ;;
 esac
-if [[ "$assay" == cabernet ]]; then
-    caller_cg_strand_mode=separate
-else
-    caller_cg_strand_mode=${CALL_CG_STRAND_MODE:-separate}
-fi
-case "$caller_cg_strand_mode" in
-    separate|merged) ;;
-    *) echo "[dbitm] spike-call: CALL_CG_STRAND_MODE must be separate or merged" >&2; exit 1 ;;
-esac
 
 raw_abs=$(realpath "$raw_path")
 final_dir=$(dirname "$raw_abs")/dbitm
@@ -211,7 +202,6 @@ run_target() {
         --output-name "$output_name" \
         --chromosomes "$chromosomes" \
         --context-mode "$caller_context_mode" \
-        --cg-strand-mode "$caller_cg_strand_mode" \
         --min-base-quality "$CALL_MIN_BASE_QUALITY" \
         --min-mapping-quality "$CALL_MIN_MAPPING_QUALITY" \
         --max-depth "$CALL_MAX_DEPTH" \
@@ -227,7 +217,6 @@ echo "====== dbitm spike-call ======"
 echo "[dbitm] assay: $assay"
 echo "[dbitm] mode: $spike_call_mode"
 echo "[dbitm] context mode: $caller_context_mode"
-echo "[dbitm] CG strand mode: $caller_cg_strand_mode"
 echo "[dbitm] pooled directory: $pooled_dir"
 echo "[dbitm] output directory: $output_dir"
 echo "[dbitm] config: $config_file"
