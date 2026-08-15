@@ -179,6 +179,10 @@ run_target() {
         echo "[dbitm] spike-call: M-bias cutoff not found ($output_name): $cutoff_path" >&2
         return 1
     fi
+    if [[ ! -s "$cutoff_path" ]]; then
+        echo "[dbitm] spike-call: no M-bias data for $output_name; skipping target"
+        return 0
+    fi
     if ! trims=$(load_trims "$cutoff_path"); then
         echo "[dbitm] spike-call: invalid M-bias cutoff ($output_name): $cutoff_path" >&2
         return 1
@@ -275,7 +279,7 @@ if [[ "$spike_call_mode" == all || "$spike_call_mode" == spike ]]; then
 fi
 
 if (( target_count == 0 )); then
-    echo "[dbitm] spike-call: no mito or spike-in targets configured; nothing to do"
+    echo "[dbitm] spike-call: no mito or spike-in targets were called; nothing to do"
     echo "====== dbitm spike-call finished ======"
     exit 0
 fi
