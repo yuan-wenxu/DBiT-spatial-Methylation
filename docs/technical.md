@@ -268,8 +268,8 @@ fastp.log
 ```
 
 When scratch storage is enabled, raw inputs are copied to the stage scratch
-directory. The final output directory is installed only after successful
-completion.
+directory. Successful output is installed at completion; if the stage exits
+with an error or a handled signal, any partial output is recovered first.
 
 ## 9. Stage 2: barcode extraction
 
@@ -672,11 +672,18 @@ stage workspace through shell traps. The exact files staged depend on the
 operation; reference FASTA and `.fai` files are included where random access is
 required.
 
-Most stages construct outputs in temporary locations and install them only after
-successful completion. M-bias has explicit restart checks: a complete existing
-TSV/PNG pair can be reused, whereas partial output is rejected. Before rerunning
-a failed production stage, inspect its log and distinguish incomplete output
-from a valid completed result.
+On successful completion, stages install their outputs and remove the scratch
+workspace. On a nonzero exit or a handled `INT`, `TERM`, or `HUP` signal, every
+scratch-enabled stage first copies its current output directory back to the
+corresponding directory under `dbitm/`, preserves the original exit status, and
+then removes the scratch workspace. If recovery copying fails, the stage reports
+a warning and still removes the scratch workspace. An uncatchable `KILL` signal
+or an abrupt host/container failure cannot run this recovery handler.
+
+Recovered output may be incomplete. M-bias has explicit restart checks: a
+complete existing TSV/PNG pair can be reused, whereas partial output is
+rejected. Before rerunning a failed production stage, inspect its log and
+distinguish incomplete output from a valid completed result.
 
 ## 19. Quality-control interpretation
 

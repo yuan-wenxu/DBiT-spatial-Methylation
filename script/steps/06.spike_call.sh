@@ -5,6 +5,14 @@ cleanup_scratch() {
     local status=$?
     trap - EXIT INT TERM HUP
     if [[ ${use_scratch:-false} == true && -n ${scratch_run:-} && -d $scratch_run ]]; then
+        if (( status != 0 )) && [[ -n ${run_output:-} && -d $run_output && -n ${output_dir:-} ]]; then
+            echo "[dbitm] spike-call: recovering scratch results after exit status $status: $output_dir" >&2
+            if mkdir -p "$output_dir" && cp -a "$run_output/." "$output_dir/"; then
+                echo "[dbitm] spike-call: scratch results recovered: $output_dir" >&2
+            else
+                echo "[dbitm] spike-call: warning: failed to recover scratch results: $run_output" >&2
+            fi
+        fi
         rm -rf -- "$scratch_run" || echo "[dbitm] spike-call: warning: failed to clean scratch directory: $scratch_run" >&2
     fi
     exit "$status"

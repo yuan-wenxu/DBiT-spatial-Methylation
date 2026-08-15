@@ -93,9 +93,6 @@ def load_mbias(path: str) -> dict[str, dict[int, CyclePoint]]:
                 rate=float(row["methylation_rate"]),
                 coverage=int(row["coverage"]),
             )
-    for read in ("R1", "R2"):
-        if not points[read]:
-            raise ValueError(f"M-bias TSV contains no usable {read} cycles: {path}")
     return points
 
 
@@ -255,10 +252,27 @@ def write_cutoffs(path: Path, cutoffs: list[Cutoff]) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def write_empty(path: Path) -> None:
+    temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        temporary.touch()
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def main() -> int:
     args = parse_args()
     validate_args(args)
     points = load_mbias(args.mbias_tsv)
+    reads_without_data = [read for read in ("R1", "R2") if not points[read]]
+    if reads_without_data:
+        output = Path(args.output)
+        write_empty(output)
+        print(f"[mbias-cutoff] no usable cycles for: {', '.join(reads_without_data)}")
+        print(f"[mbias-cutoff] output={output}")
+        return 0
     cutoffs = [
         infer_cutoff(
             read,
