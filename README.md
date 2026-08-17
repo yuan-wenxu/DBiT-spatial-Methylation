@@ -99,6 +99,8 @@ SCRATCH_ROOT=/path/to/scratch
 BARCODE_WHITELIST=           # empty uses docs/barcodes/barcodes50.tsv
 CALL_CONTEXT_MODE=both       # cg, ch, or both
 CALL_CHROMOSOMES=chr1,chr2
+METHSCAN_MIN_SITES=50000
+METHSCAN_CH_MIN_SITES=50000
 ```
 
 Set `SCRATCH_ROOT` to a directory on a fast SSD. Adjust the SLURM CPU, memory,
@@ -157,12 +159,13 @@ dbitm taps mbias --input /path/to/sample/fastq
 dbitm taps call --input /path/to/sample/fastq
 dbitm taps spike-call --input /path/to/sample/fastq
 dbitm taps summary --input /path/to/sample/fastq
+dbitm taps methscan --input /path/to/sample/fastq
 ```
 
 The required order is:
 
 ```text
-fastp -> barcode -> (align + spike-align) -> pool -> mbias -> call -> spike-call -> summary
+fastp -> barcode -> (align + spike-align) -> pool -> mbias -> call -> spike-call -> summary -> methscan
 ```
 
 Use another configuration file with:
@@ -186,7 +189,8 @@ sample/
     ├── pooled/
     ├── mbias/
     ├── coverage/
-    └── summary/
+    ├── summary/
+    └── methscan/
 ```
 
 Run `dbitm --help` to view the current command options.

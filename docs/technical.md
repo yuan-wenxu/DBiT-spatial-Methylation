@@ -26,7 +26,7 @@ The complete execution graph is:
 ```text
 fastp -> barcode -> +-> align ------+
                     |               |
-                    +-> spike-align +-> pool -> mbias -> call -> spike-call -> summary
+                    +-> spike-align +-> pool -> mbias -> call -> spike-call -> summary -> methscan
 ```
 
 `align` and `spike-align` can run concurrently. All later stages are ordered by
@@ -43,12 +43,13 @@ data dependency.
 | `call` | `script/steps/06.call.sh` | Call per-spot host CG and CH methylation |
 | `spike-call` | `script/steps/06.spike_call.sh` | Call aggregate mitochondrial and spike-in methylation |
 | `summary` | `script/steps/07.summary.sh` | Produce QC tables and plots |
+| `methscan` | `script/steps/08.methscan.sh` | Detect context-specific VMRs and construct spot-by-VMR matrices |
 
 ## 3. Installation and runtime environment
 
 The project uses Pixi for dependency and environment management. Important
-runtime packages include Python 3.11, BWA, BISCUIT, SAMtools, Sinto, pysam,
-fastp, pigz, fuzzysearch, and Matplotlib.
+runtime packages include Python 3.11, BWA, BISCUIT, SAMtools, Sinto, MethSCAn,
+pysam, fastp, pigz, fuzzysearch, and Matplotlib.
 
 Initialize the locked environment and install the command-line entry point with:
 
@@ -78,6 +79,7 @@ dbitm taps all --input /data/sample/fastq
 dbitm emseq mbias --input /data/sample/fastq
 dbitm cabernet call --input /data/sample/fastq --dry-run
 dbitm taps summary --input /data/sample/fastq --config config/custom.sh
+dbitm taps methscan --input /data/sample/fastq --config config/custom.sh
 ```
 
 The input directory must contain exactly one paired FASTQ set whose filenames
@@ -170,6 +172,19 @@ The main calling controls include:
 - maximum genomic interval size; shorter chromosomes are divided into at
   least `CALL_JOBS` intervals when their length permits
 - parallel caller job count
+
+### 5.4 MethSCAn configuration
+
+The independent MethSCAn stage uses:
+
+- `METHSCAN_CHUNKSIZE`: chromosome chunk size used by `methscan prepare`
+- `METHSCAN_MIN_SITES`: minimum observed CG sites required per spot
+- `METHSCAN_CH_MIN_SITES`: minimum observed CH sites required per spot
+- `METHSCAN_THREADS`: threads used by `methscan scan` and `methscan matrix`
+
+`METHSCAN_NAME`, `METHSCAN_THREADS`, `METHSCAN_PARTITION`, `METHSCAN_MEM`, and
+`METHSCAN_TIME` control the separate Slurm job. The configured CPU count is
+also passed to the two MethSCAn commands that support parallel execution.
 
 ## 6. Read and coordinate data model
 
@@ -645,7 +660,61 @@ summary/
 
 The CG or CH plot groups are omitted when that context is not selected.
 
-## 17. Complete output layout
+## 17. Stage 8: CG and CH VMR matrices
+
+Entry point: `script/steps/08.methscan.sh`
+
+This independent stage follows `CALL_CONTEXT_MODE`. It processes CG in `cg`
+mode, CH in `ch` mode, and runs separate CG and CH workflows sequentially in
+`both` mode after the summary stage:
+
+```text
+prepare -> filter -> smooth -> scan -> matrix
+```
+
+For each selected context, `prepare` reads every matching
+`coverage/host/**/*.<CONTEXT>.cov` file as one spatial spot. `filter` retains
+spots with at least `METHSCAN_MIN_SITES` observed CG sites or
+`METHSCAN_CH_MIN_SITES` observed CH sites. `smooth` constructs a separate
+pseudo-bulk methylation background for each context, `scan` identifies VMRs,
+and `matrix` quantifies those regions across spots. MethSCAn defaults are used
+for smoothing and VMR detection parameters that are not exposed in the
+configuration. CG and CH sites are never combined in one MethSCAn data set.
+
+The outputs are stored in a separate top-level directory:
+
+```text
+methscan/
+├── CG/
+│   ├── compact/
+│   ├── filter/
+│   │   └── smoothed/
+│   ├── VMRs.bed
+│   ├── matrix/
+│   │   ├── methylated_sites.csv.gz
+│   │   ├── total_sites.csv.gz
+│   │   ├── methylation_fractions.csv.gz
+│   │   └── mean_shrunken_residuals.csv.gz
+│   └── methscan.log
+└── CH/
+    ├── compact/
+    ├── filter/
+    │   └── smoothed/
+    ├── VMRs.bed
+    ├── matrix/
+    │   ├── methylated_sites.csv.gz
+    │   ├── total_sites.csv.gz
+    │   ├── methylation_fractions.csv.gz
+    │   └── mean_shrunken_residuals.csv.gz
+    └── methscan.log
+```
+
+Only the selected context directories are generated. The matrices written by
+MethSCAn are spot-by-VMR tables. Missing values mean that a spot has no usable
+observation in that VMR; they are not zero methylation. This stage does not
+perform the iterative-PCA imputation used in some downstream analyses.
+
+## 18. Complete output layout
 
 A successful full run normally has the following structure:
 
@@ -658,13 +727,14 @@ dbitm/
 ├── pooled/
 ├── mbias/
 ├── coverage/
-└── summary/
+├── summary/
+└── methscan/
 ```
 
 Exact files depend on `MBIAS_MODE`, `CALL_CONTEXT_MODE`, `SPIKE_CALL_MODE`, and
 the configured references.
 
-## 18. Scratch storage and restart behavior
+## 19. Scratch storage and restart behavior
 
 When `SCRATCH_ROOT` is configured, stages create isolated temporary workspaces
 under a `dbitm` subdirectory, copy or stage the required inputs, and remove the
