@@ -25,6 +25,21 @@ enable_cleanup() {
     trap 'exit 129' HUP
 }
 
+load_trims() {
+    local cutoff_path=$1
+    awk -F '\t' '
+        FNR == 1 { next }
+        $1 == "R1" { r1_left=$7; r1_right=$8; seen_r1=1 }
+        $1 == "R2" { r2_left=$7; r2_right=$8; seen_r2=1 }
+        END {
+            if (!seen_r1 || !seen_r2 ||
+                r1_left !~ /^[0-9]+$/ || r1_right !~ /^[0-9]+$/ ||
+                r2_left !~ /^[0-9]+$/ || r2_right !~ /^[0-9]+$/) exit 2
+            printf "%d\t%d\t%d\t%d\n", r1_left, r1_right, r2_left, r2_right
+        }
+    ' "$cutoff_path"
+}
+
 if (( $# < 2 || $# > 3 )); then
     echo "Usage: 06.call.sh <assay> <raw_fastq_folder> [--dry-run]" >&2
     exit 1
@@ -105,107 +120,31 @@ fi
 barcode_whitelist=$(realpath "$barcode_whitelist")
 
 cutoff_dir=$final_dir/mbias
-mbias_mode=${MBIAS_MODE:-all}
-case "$mbias_mode" in
-    all|host|spike) ;;
-    *) echo "[dbitm] call: MBIAS_MODE must be all, host, or spike" >&2; exit 1 ;;
-esac
-
-declare -a cutoff_targets=()
-if [[ "$mbias_mode" == all || "$mbias_mode" == host ]]; then
-    cutoff_targets+=(host)
-fi
-if [[ "$mbias_mode" == all || "$mbias_mode" == spike ]]; then
-    spike_declaration=$(declare -p CALL_SPIKE_IN_REFERENCES 2>/dev/null || true)
-    if [[ "$spike_declaration" != "declare -A "* ]]; then
-        echo "[dbitm] call: CALL_SPIKE_IN_REFERENCES must be defined with declare -A" >&2
+cutoff_path=$cutoff_dir/host.mbias.cutoffs.tsv
+cutoff_available=true
+if [[ ! -f "$cutoff_path" ]]; then
+    if [[ "$dry_run" == true ]]; then
+        echo "[dbitm] call: dry-run expects future host M-bias cutoff: $cutoff_path"
+        cutoff_available=false
+    else
+        echo "[dbitm] call: host M-bias cutoff file not found: $cutoff_path" >&2
+        echo "[dbitm] call: run the mbias step first." >&2
         exit 1
     fi
-    declare -n call_spike_references=CALL_SPIKE_IN_REFERENCES
-    declare -a call_spike_names=()
-    if (( ${#call_spike_references[@]} > 0 )); then
-        mapfile -t call_spike_names < <(
-            printf '%s\n' "${!call_spike_references[@]}" | LC_ALL=C sort
-        )
-    fi
-    for spike_name in "${call_spike_names[@]}"; do
-        spike_reference=${call_spike_references[$spike_name]}
-        spike_reference=${spike_reference#"${spike_reference%%[![:space:]]*}"}
-        spike_reference=${spike_reference%"${spike_reference##*[![:space:]]}"}
-        if [[ -n "$spike_reference" ]]; then
-            cutoff_targets+=("$spike_name")
-        fi
-    done
 fi
-if (( ${#cutoff_targets[@]} == 0 )); then
-    echo "[dbitm] call: no host or spike-in targets were selected for M-bias cutoffs" >&2
-    exit 1
-fi
-
-declare -a cutoff_paths=()
-declare -a missing_cutoff_targets=()
-for cutoff_target in "${cutoff_targets[@]}"; do
-    cutoff_path=$cutoff_dir/$cutoff_target.mbias.cutoffs.tsv
-    if [[ ! -f "$cutoff_path" ]]; then
-        if [[ "$dry_run" == true ]]; then
-            echo "[dbitm] call: dry-run expects future M-bias cutoff ($cutoff_target): $cutoff_path"
-            missing_cutoff_targets+=("$cutoff_target")
-            continue
-        else
-            echo "[dbitm] call: M-bias cutoff file not found ($cutoff_target): $cutoff_path" >&2
-            echo "[dbitm] call: run the mbias step first." >&2
-            exit 1
-        fi
-    fi
-    cutoff_paths+=("$cutoff_path")
-done
-if (( ${#missing_cutoff_targets[@]} > 0 )); then
+if [[ "$cutoff_available" == false ]]; then
     call_r1_left_trim=auto
     call_r1_right_trim=auto
     call_r2_left_trim=auto
     call_r2_right_trim=auto
 else
-    if ! trim_values=$(awk -F '\t' '
-    FNR == 1 { next }
-    $1 == "R1" {
-        if ($7 !~ /^[0-9]+$/ || $8 !~ /^[0-9]+$/) invalid = 1
-        if (!seen_r1 || $7 + 0 > r1_left) {
-            r1_left = $7 + 0
-            r1_left_source = FILENAME
-        }
-        if (!seen_r1 || $8 + 0 > r1_right) {
-            r1_right = $8 + 0
-            r1_right_source = FILENAME
-        }
-        seen_r1 = 1
-    }
-    $1 == "R2" {
-        if ($7 !~ /^[0-9]+$/ || $8 !~ /^[0-9]+$/) invalid = 1
-        if (!seen_r2 || $7 + 0 > r2_left) {
-            r2_left = $7 + 0
-            r2_left_source = FILENAME
-        }
-        if (!seen_r2 || $8 + 0 > r2_right) {
-            r2_right = $8 + 0
-            r2_right_source = FILENAME
-        }
-        seen_r2 = 1
-    }
-    END {
-        if (invalid || !seen_r1 || !seen_r2) exit 2
-        printf "%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\n",
-            r1_left, r1_right, r2_left, r2_right,
-            r1_left_source, r1_right_source,
-            r2_left_source, r2_right_source
-    }
-' "${cutoff_paths[@]}"); then
-        echo "[dbitm] call: invalid M-bias cutoff file under: $cutoff_dir" >&2
+    if ! trim_values=$(load_trims "$cutoff_path"); then
+        echo "[dbitm] call: invalid host M-bias cutoff: $cutoff_path" >&2
         exit 1
     fi
     IFS=$'\t' read -r \
         call_r1_left_trim call_r1_right_trim \
         call_r2_left_trim call_r2_right_trim \
-        r1_left_source r1_right_source r2_left_source r2_right_source \
         <<< "$trim_values"
     for trim_name in \
         call_r1_left_trim call_r1_right_trim call_r2_left_trim call_r2_right_trim
@@ -229,11 +168,8 @@ echo "[dbitm] barcode whitelist: $barcode_whitelist"
 echo "[dbitm] pooled BAM: $pooled_bam"
 echo "[dbitm] chromosomes: $CALL_CHROMOSOMES"
 echo "[dbitm] context mode: $caller_context_mode"
-echo "[dbitm] M-bias cutoff files: ${#cutoff_paths[@]}/${#cutoff_targets[@]}"
-echo "[dbitm] combined trimming: R1=${call_r1_left_trim},${call_r1_right_trim} R2=${call_r2_left_trim},${call_r2_right_trim}"
-if (( ${#missing_cutoff_targets[@]} == 0 )); then
-    echo "[dbitm] cutoff sources: R1-left=$(basename "$r1_left_source") R1-right=$(basename "$r1_right_source") R2-left=$(basename "$r2_left_source") R2-right=$(basename "$r2_right_source")"
-fi
+echo "[dbitm] host M-bias cutoff: $cutoff_path"
+echo "[dbitm] trimming: R1=${call_r1_left_trim},${call_r1_right_trim} R2=${call_r2_left_trim},${call_r2_right_trim}"
 echo "[dbitm] config: $config_file"
 echo "[dbitm] output directory: $final_dir/coverage"
 

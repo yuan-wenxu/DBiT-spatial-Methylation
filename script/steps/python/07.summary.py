@@ -27,6 +27,7 @@ import pysam
 
 
 VALID_FLAGS = {83, 99, 147, 163}
+CH_CONTEXTS = ("ca", "cc", "ct")
 CONTEXT_SPECS = {
     "cg": {
         "suffix": "CG",
@@ -44,21 +45,24 @@ CONTEXT_SPECS = {
         "mito_mean_field": "host_mito_mean_methylation",
         "spike_mean_suffix": "mean_methylation",
     },
-    "ch": {
-        "suffix": "CH",
-        "mean_field": "mean_ch_methylation",
-        "site_field": "ch_site_count",
-        "site_heatmap": "ch_site_count_heatmap.png",
-        "site_title": "CH Sites per Spot",
-        "site_label": "CH sites",
-        "mean_heatmap": "mean_ch_methylation_heatmap.png",
-        "mean_violin": "mean_ch_methylation_violin.png",
-        "mean_title": "Mean CH Methylation per Spot",
-        "violin_title": "Spot Mean CH Methylation Distribution",
-        "host_mean_field": "host_spot_mean_ch_methylation",
-        "host_median_field": "host_spot_median_ch_sites",
-        "mito_mean_field": "host_mito_mean_ch_methylation",
-        "spike_mean_suffix": "mean_ch_methylation",
+    **{
+        context: {
+            "suffix": context.upper(),
+            "mean_field": f"mean_{context}_methylation",
+            "site_field": f"{context}_site_count",
+            "site_heatmap": f"{context}_site_count_heatmap.png",
+            "site_title": f"{context.upper()} Sites per Spot",
+            "site_label": f"{context.upper()} sites",
+            "mean_heatmap": f"mean_{context}_methylation_heatmap.png",
+            "mean_violin": f"mean_{context}_methylation_violin.png",
+            "mean_title": f"Mean {context.upper()} Methylation per Spot",
+            "violin_title": f"Spot Mean {context.upper()} Methylation Distribution",
+            "host_mean_field": f"host_spot_mean_{context}_methylation",
+            "host_median_field": f"host_spot_median_{context}_sites",
+            "mito_mean_field": f"host_mito_mean_{context}_methylation",
+            "spike_mean_suffix": f"mean_{context}_methylation",
+        }
+        for context in CH_CONTEXTS
     },
 }
 
@@ -75,7 +79,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "--context-mode",
         choices=("cg", "ch", "both"),
         default="cg",
-        help="Coverage contexts to summarize (default: cg).",
+        help="Coverage contexts to summarize; ch expands to CA, CC, and CT (default: cg).",
     )
     parser.add_argument("--spike-in-name", action="append", default=[])
     parser.add_argument("--dry-run", action="store_true")
@@ -410,7 +414,6 @@ def write_methylation_violin(
             axis.hlines(values[0], 0.8, 1.2, color="black", linewidth=1.5)
         axis.set_xticks([1], [f"All spots\n(n={len(values)})"])
         axis.set_xlim(0.5, 1.5)
-        axis.set_ylim(0, 100)
         axis.set_ylabel("Mean methylation (%)", fontsize=10)
         axis.set_title(title, fontsize=12)
         axis.grid(axis="y", alpha=0.25)
@@ -435,7 +438,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     coverage_dir = work_dir / "coverage"
     manifest_path = coverage_dir / "spot_manifest.tsv"
     host_bam = work_dir / "pooled" / "pooled.cb.bam"
-    contexts = ["cg", "ch"] if args.context_mode == "both" else [args.context_mode]
+    if args.context_mode == "cg":
+        contexts = ["cg"]
+    elif args.context_mode == "ch":
+        contexts = list(CH_CONTEXTS)
+    else:
+        contexts = ["cg", *CH_CONTEXTS]
     host_cov_paths = {
         context: sorted(
             (coverage_dir / "host").rglob(
@@ -538,7 +546,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             output_dir / "reads_heatmap.png",
             "Reads per Spot",
             "Reads",
-            "viridis",
+            "Reds",
             None,
         )
         for context in contexts:

@@ -66,27 +66,30 @@ output_dir=$final_dir/methscan
 context_mode=${CALL_CONTEXT_MODE}
 case "$context_mode" in
     cg) methscan_contexts=(CG) ;;
-    ch) methscan_contexts=(CH) ;;
-    both) methscan_contexts=(CG CH) ;;
+    ch) methscan_contexts=(CA CC CT) ;;
+    both) methscan_contexts=(CG CA CC CT) ;;
     *) echo "[dbitm] methscan: CALL_CONTEXT_MODE must be cg, ch, or both" >&2; exit 1 ;;
 esac
 
 methscan_chunksize=${METHSCAN_CHUNKSIZE}
-methscan_cg_min_sites=${METHSCAN_MIN_SITES}
-methscan_ch_min_sites=${METHSCAN_CH_MIN_SITES}
+declare -A methscan_min_sites_by_context=(
+    [CG]="${METHSCAN_CG_MIN_SITES}"
+    [CA]="${METHSCAN_CA_MIN_SITES}"
+    [CC]="${METHSCAN_CC_MIN_SITES}"
+    [CT]="${METHSCAN_CT_MIN_SITES}"
+)
 methscan_threads=${METHSCAN_THREADS}
 if [[ ! "$methscan_chunksize" =~ ^[1-9][0-9]*$ ]]; then
     echo "[dbitm] methscan: METHSCAN_CHUNKSIZE must be greater than zero" >&2
     exit 1
 fi
-if [[ ! "$methscan_cg_min_sites" =~ ^[1-9][0-9]*$ ]]; then
-    echo "[dbitm] methscan: METHSCAN_MIN_SITES must be greater than zero" >&2
-    exit 1
-fi
-if [[ ! "$methscan_ch_min_sites" =~ ^[1-9][0-9]*$ ]]; then
-    echo "[dbitm] methscan: METHSCAN_CH_MIN_SITES must be greater than zero" >&2
-    exit 1
-fi
+for methscan_context in "${methscan_contexts[@]}"; do
+    methscan_min_sites=${methscan_min_sites_by_context[$methscan_context]}
+    if [[ ! "$methscan_min_sites" =~ ^[1-9][0-9]*$ ]]; then
+        echo "[dbitm] methscan: METHSCAN_${methscan_context}_MIN_SITES must be greater than zero" >&2
+        exit 1
+    fi
+done
 if [[ ! "$methscan_threads" =~ ^[1-9][0-9]*$ ]]; then
     echo "[dbitm] methscan: METHSCAN_THREADS must be greater than zero" >&2
     exit 1
@@ -98,11 +101,7 @@ echo "[dbitm] contexts: ${methscan_contexts[*]}"
 echo "[dbitm] coverage directory: $coverage_dir"
 echo "[dbitm] output directory: $output_dir"
 for methscan_context in "${methscan_contexts[@]}"; do
-    if [[ "$methscan_context" == CG ]]; then
-        echo "[dbitm] CG min sites: $methscan_cg_min_sites"
-    else
-        echo "[dbitm] CH min sites: $methscan_ch_min_sites"
-    fi
+    echo "[dbitm] $methscan_context min sites: ${methscan_min_sites_by_context[$methscan_context]}"
 done
 echo "[dbitm] threads: $methscan_threads"
 echo "[dbitm] config: $config_file"
@@ -161,11 +160,7 @@ for methscan_context in "${methscan_contexts[@]}"; do
     vmrs_bed=$context_run_output/VMRs.bed
     matrix_dir=$context_run_output/matrix
     methscan_log=$context_run_output/methscan.log
-    if [[ "$methscan_context" == CG ]]; then
-        methscan_min_sites=$methscan_cg_min_sites
-    else
-        methscan_min_sites=$methscan_ch_min_sites
-    fi
+    methscan_min_sites=${methscan_min_sites_by_context[$methscan_context]}
     mapfile -d '' -t context_cov_files < <(
         find "$coverage_dir" -type f -name "*.${methscan_context}.cov" -print0 | sort -z
     )

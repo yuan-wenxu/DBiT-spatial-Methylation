@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
 """Methylation caller for DBiT TAPS/TAPS-v2, EM-seq, and Cabernet data.
-
-Reads a coordinate-sorted pooled BAM, performs pileup over reference CpG and
-CH positions, groups counts by spot (CB tag), and writes per-spot .CG.cov /
-.CH.cov files. Chromosomes are processed serially; genomic intervals within
-one chromosome are processed in parallel and merged by the parent process.
 """
 
 from __future__ import annotations
@@ -63,7 +58,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "-o", "--out-dir",
         required=True,
-        help="Output directory for per-spot .CG.cov / .CH.cov files.",
+        help="Output directory for per-spot .CG.cov / .CA.cov / .CC.cov / .CT.cov files.",
     )
     parser.add_argument(
         "--barcode-whitelist",
@@ -648,23 +643,32 @@ def process_interval(
 
 def append_part_to_outputs(
     part_path: Path,
-    context: str,
+    context: Optional[str],
     out_dir: Path,
     output_paths: Dict[Path, Path],
     temp_suffix: str,
 ) -> None:
-    active_spot: Optional[str] = None
+    active_output: Optional[Tuple[str, str]] = None
     output_handle: Optional[TextIO] = None
     try:
         with part_path.open(encoding="utf-8") as part_handle:
             for raw_line in part_handle:
                 spot_id, payload = raw_line.split("\t", 1)
-                if spot_id != active_spot:
+                output_context = context
+                if output_context is None:
+                    fields = payload.rstrip("\n").split("\t")
+                    if len(fields) < 7 or fields[6] not in CH_FORWARD_CONTEXTS:
+                        raise ValueError(
+                            f"invalid CH context in caller part: {part_path}"
+                        )
+                    output_context = fields[6]
+                output_key = (spot_id, output_context)
+                if output_key != active_output:
                     if output_handle is not None:
                         output_handle.close()
                     prefix = spot_id.split("_", 1)[0]
                     final_path = (
-                        out_dir / "host" / prefix / f"{spot_id}.{context}.cov"
+                        out_dir / "host" / prefix / f"{spot_id}.{output_context}.cov"
                     )
                     final_path.parent.mkdir(parents=True, exist_ok=True)
                     if final_path in output_paths:
@@ -677,7 +681,7 @@ def append_part_to_outputs(
                         output_paths[final_path] = temp_path
                         mode = "w"
                     output_handle = temp_path.open(mode, encoding="utf-8")
-                    active_spot = spot_id
+                    active_output = output_key
                 output_handle.write(payload)
     finally:
         if output_handle is not None:
@@ -784,7 +788,7 @@ def process_chromosome(
             )
         if args.context_mode in ("ch", "both"):
             append_part_to_outputs(
-                Path(ch_part), "CH", Path(args.out_dir),
+                Path(ch_part), None, Path(args.out_dir),
                 output_paths, temp_suffix,
             )
         totals[0] += cp

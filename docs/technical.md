@@ -5,7 +5,8 @@
 DBiT-spatial-Methylation is a paired-end sequencing workflow for spatial DNA
 methylation assays. It extracts spatial barcodes from read 1, aligns host and
 spike-in reads, measures cycle-dependent methylation bias, calls methylation at
-CG and CH sites, and creates per-spot and sample-level quality-control summaries.
+CG, CA, CC, and CT sites, and creates per-spot and sample-level quality-control
+summaries.
 
 The workflow supports four assays:
 
@@ -40,7 +41,7 @@ data dependency.
 | `spike-align` | `script/steps/03.spike_align.sh` | Align candidate spike-in reads |
 | `pool` | `script/steps/04.pool.sh` | Merge, coordinate-sort, and index BAM files |
 | `mbias` | `script/steps/05.mbias.sh` | Estimate cycle-specific methylation bias and trim cutoffs |
-| `call` | `script/steps/06.call.sh` | Call per-spot host CG and CH methylation |
+| `call` | `script/steps/06.call.sh` | Call per-spot host CG, CA, CC, and CT methylation |
 | `spike-call` | `script/steps/06.spike_call.sh` | Call aggregate mitochondrial and spike-in methylation |
 | `summary` | `script/steps/07.summary.sh` | Produce QC tables and plots |
 | `methscan` | `script/steps/08.methscan.sh` | Detect context-specific VMRs and construct spot-by-VMR matrices |
@@ -178,8 +179,10 @@ The main calling controls include:
 The independent MethSCAn stage uses:
 
 - `METHSCAN_CHUNKSIZE`: chromosome chunk size used by `methscan prepare`
-- `METHSCAN_MIN_SITES`: minimum observed CG sites required per spot
-- `METHSCAN_CH_MIN_SITES`: minimum observed CH sites required per spot
+- `METHSCAN_CG_MIN_SITES`: minimum observed CG sites required per spot
+- `METHSCAN_CA_MIN_SITES`: minimum observed CA sites required per spot
+- `METHSCAN_CC_MIN_SITES`: minimum observed CC sites required per spot
+- `METHSCAN_CT_MIN_SITES`: minimum observed CT sites required per spot
 - `METHSCAN_THREADS`: threads used by `methscan scan` and `methscan matrix`
 
 `METHSCAN_NAME`, `METHSCAN_THREADS`, `METHSCAN_PARTITION`, `METHSCAN_MEM`, and
@@ -213,17 +216,18 @@ delimiter form and the legacy concatenated form.
 ### 6.2 Read orientation and sequencing cycle
 
 BAM query sequences are stored in the orientation used by the SAM/BAM record.
-For M-bias and trimming, the scripts convert the aligned query position into a
-cycle measured from the original molecule's 5-prime end:
+M-bias converts the aligned query position into a cycle measured from the
+original molecule's 5-prime end:
 
 - forward alignments use the query position directly
 - reverse alignments invert the query position
 - R1 receives an offset for the barcode/linker portion removed before alignment
 - R2 has no barcode-removal offset
 
-Cycles are one-based. `MBIAS_ORIGINAL_R1_LENGTH` supplies the original R1 length
+Cycles are one-based. `MBIAS_R1_ORIGINAL_LENGTH` supplies the original R1 length
 used to reconstruct the removed prefix. Setting it to zero makes R1 cycles
-relative to the trimmed biological sequence instead.
+relative to the trimmed biological sequence instead. Calling applies the
+inferred end trims with reverse-read orientation accounted for.
 
 ### 6.3 Genomic coordinates in coverage files
 
@@ -234,16 +238,13 @@ not a BED half-open interval.
 For CpG calls, evidence from both strands is merged at the forward-strand
 reference C.
 
+CH calls retain strand: plus-strand sites use the reference C coordinate and
+minus-strand sites use the corresponding reference G coordinate.
+
 ## 7. Assay-specific methylation chemistry
 
 The callers inspect aligned dinucleotides to classify CpG evidence consistently
 on both strands.
-
-| Observed dinucleotide | Represented strand | Cytosine-derived query base |
-|---|---|---|
-| `TG` | plus | first base |
-| `CA` | minus | second base |
-| `CG` | determined from alignment flag | C for top-family reads or G for bottom-family reads |
 
 Methylation interpretation is assay dependent:
 
@@ -255,7 +256,8 @@ Methylation interpretation is assay dependent:
 Only the primary paired-end orientation flags `83`, `99`, `147`, and `163` are
 accepted for methylation classification. For an observed `CG`, flags `99` and
 `147` represent the top/plus family, whereas flags `83` and `163` represent the
-bottom/minus family.
+bottom/minus family. CpG output does not retain that family label because both
+families update the same forward-C counter.
 
 For non-CpG CH contexts (`CA`, `CC`, and `CT` in the reference):
 
@@ -418,13 +420,15 @@ Spike-in targets are analyzed without host-style subsampling.
 M-bias excludes unmapped, secondary, supplementary, unsupported paired-end
 orientations, and observations below the configured mapping or base quality.
 The same assay-specific CpG dinucleotide rules described in Section 7 are used
-to avoid a mismatch between M-bias and methylation calling.
+to avoid a mismatch between M-bias and methylation calling. M-bias only evaluates
+CG and does not generate separate CA, CC, or CT profiles.
 
 ### 13.2 Per-cycle statistics
 
 For each R1/R2 cycle, the program records methylated, unmethylated, and total
-CpG observations. Output rates in TSV files are fractions from 0 to 1, while
-plots display percentages from 0 to 100.
+CpG observations. Plus- and minus-family CpG evidence is combined in the same
+counter, using the caller-aligned query position without a one-base shift.
+TSV rates are fractions from 0 to 1; plots use percentages from 0 to 100.
 
 Each selected target produces:
 
@@ -450,7 +454,8 @@ stable run within the configured tolerance. The default controls are:
 
 The resulting table contains left and right trim values for R1 and R2. Existing
 complete TSV/PNG outputs can be reused, while incomplete output sets are treated
-as errors to prevent mixing stale and current results.
+as errors to prevent mixing stale and current results. A target without usable
+cycles receives a zero-byte cutoff marker; spike calling skips that target.
 
 ## 14. Stage 6A: per-spot host methylation calling
 
@@ -460,16 +465,15 @@ Entry points:
 - `script/steps/python/06.methy_caller.py`
 
 The caller reads the coordinate-sorted host BAM, reference FASTA, barcode
-whitelist, and M-bias cutoffs. It processes configured host chromosomes in
-genomic intervals. Interval workers can run in parallel, while chromosome
-dispatch remains controlled by the shell stage.
+whitelist, and the host M-bias cutoff (`host.mbias.cutoffs.tsv`). It processes
+configured host chromosomes in genomic intervals. Interval workers can run in
+parallel, while chromosome dispatch remains controlled by the shell stage.
 
 ### 14.1 Trim selection
 
-When multiple M-bias targets are selected, the host shell stage reads every
-selected cutoff table and takes the maximum R1-left, R1-right, R2-left, and
-R2-right trim. This conservative rule prevents a cycle considered biased in any
-selected target from contributing to the host call.
+The host shell stage reads only `host.mbias.cutoffs.tsv` and passes its four
+trim values to the per-spot host caller. Mitochondrial and spike-in cutoff
+tables are consumed separately by the Stage 6B aggregate caller.
 
 Trim decisions use molecular 5-prime and 3-prime positions and therefore account
 for reverse-aligned reads. They do not use raw BAM query positions as if every
@@ -484,7 +488,8 @@ indices.
 ### 14.3 CpG strand handling
 
 The caller combines plus- and minus-strand CpG evidence at the forward reference
-C coordinate for every assay.
+C coordinate for every assay. It does not emit a second row at the symmetric G
+coordinate and has no separate CpG-strand mode.
 
 ### 14.4 Per-spot output
 
@@ -492,7 +497,9 @@ Host coverage files are grouped by the first spatial coordinate:
 
 ```text
 coverage/host/<X>/<X>_<Y>.CG.cov
-coverage/host/<X>/<X>_<Y>.CH.cov
+coverage/host/<X>/<X>_<Y>.CA.cov
+coverage/host/<X>/<X>_<Y>.CC.cov
+coverage/host/<X>/<X>_<Y>.CT.cov
 ```
 
 CG files contain:
@@ -501,9 +508,9 @@ CG files contain:
 chrom  start  end  methylation_percent  methylated_count  unmethylated_count
 ```
 
-CH files additionally record context and strand. Methylation percentage is
-calculated from the methylated and unmethylated observations for that output
-row.
+CA, CC, and CT files add `context` and `strand` columns and do not combine the
+two strands. A context file is created only when that spot has at least one row;
+all whitelist spots remain in `spot_manifest.tsv`.
 
 ## 15. Stage 6B: mitochondrial and spike-in calling
 
@@ -525,24 +532,30 @@ Mitochondrial calling uses `pooled.cb.bam`, `CALL_REFERENCE`, and
 `CALL_MITO_CHROMOSOMES`. Spike-in calling uses each `pooled.<name>.bam`, its
 configured FASTA, and the contigs listed in that FASTA's `.fai` index.
 
-Unlike the host caller's conservative combined cutoff, each aggregate target
-uses its own M-bias cutoff: mitochondrial calls use the host cutoff and each
-spike-in uses its matching cutoff.
+The host caller uses the host M-bias cutoff. Each aggregate target uses its own
+M-bias cutoff: mitochondrial calls use the host cutoff and each spike-in uses
+its matching cutoff.
 
 Outputs under `dbitm/coverage/` include:
 
 ```text
 host_mito.CG.cov
-host_mito.CH.cov
+host_mito.CA.cov
+host_mito.CC.cov
+host_mito.CT.cov
 lambda.CG.cov
-lambda.CH.cov
+lambda.CA.cov
+lambda.CC.cov
+lambda.CT.cov
 puc19.CG.cov
-puc19.CH.cov
+puc19.CA.cov
+puc19.CC.cov
+puc19.CT.cov
 spike_call.log
 ```
 
-These files use the same assay chemistry, context selection, strand mode,
-quality filters, coordinate convention, and trim logic as host calling.
+These files use the host calling rules: CG is strand-merged, while CA, CC, and
+CT retain context and strand.
 
 ## 16. Stage 7: summary and visualization
 
@@ -553,9 +566,9 @@ Entry points:
 
 The summary stage combines barcode statistics, fastp metrics, pooled BAM
 metrics, per-spot host coverage, and aggregate mitochondrial/spike-in coverage.
-It follows `CALL_CONTEXT_MODE`: `cg` summarizes CG files, `ch` summarizes CH
-files, and `both` summarizes both contexts. It does not require or emit a
-sample-ID field.
+It follows `CALL_CONTEXT_MODE`: `cg` summarizes CG files, `ch` summarizes CA,
+CC, and CT files separately, and `both` summarizes all four contexts. It does
+not require or emit a sample-ID field.
 
 ### 16.1 Inputs
 
@@ -570,15 +583,20 @@ The principal inputs are:
 - `coverage/<spike>.<context>.cov`, when produced
 - corresponding pooled spike-in BAMs
 
-Here, `<context>` is `CG`, `CH`, or both according to `CALL_CONTEXT_MODE`.
+Here, `<context>` is `CG`, `CA`, `CC`, or `CT` according to
+`CALL_CONTEXT_MODE`.
 
 ### 16.2 Per-spot metrics
 
 `per_spot_summary.tsv` contains one row for every manifest spot, including spots
 with zero reads or zero called sites. It always reports spatial indices and read
-counts. In CG mode it adds `mean_methylation` and `cpg_site_count`; in CH mode it
-adds `mean_ch_methylation` and `ch_site_count`; in both mode it adds all four
+counts. In CG mode it adds `mean_methylation` and `cpg_site_count`. In CH mode it
+adds separate `mean_<context>_methylation` and `<context>_site_count` fields for
+CA, CC, and CT, where `<context>` is lowercase. Both mode includes all eight
 context-specific fields.
+
+The per-spot `reads` field counts BAM records assigned by `CB`. Each
+`*_site_count` is the number of nonzero coverage rows, not read depth.
 
 The mean is:
 
@@ -586,24 +604,26 @@ The mean is:
 mean methylation = sum of per-site methylation percentages / number of context rows
 ```
 
-Each CG or CH row therefore has equal weight within its context. This is not a
-read-depth-weighted ratio of total methylated observations to total
+Each CG, CA, CC, or CT row therefore has equal weight within its context. This
+is not a read-depth-weighted ratio of total methylated observations to total
 observations.
 
 ### 16.3 Sample-level metrics
 
 `sample_summary.tsv` reports workflow-wide values including:
 
-- fastp input and output reads
-- barcode-kept read pairs and reads
-- host BAM records and mapped reads
-- reads assigned to valid paired-end orientations
-- host site counts and mean methylation for each selected context
+- raw reads from the fastp report
+- barcode-retained reads and their fraction of raw reads
+- host and spike-in mapped alignment records
+- host alignment records assigned to valid paired-end orientations
+- host mean methylation and median per-spot site count for each selected context
 - mitochondrial and spike-in mean methylation for each selected context
 - saturation fields where supported
 
 Within each context, the host-wide mean weights each spot mean by its site count,
 which is equivalent to giving every spot-by-site output row equal weight.
+Missing mitochondrial or configured spike-in coverage files produce `NA` for
+that target and context instead of aborting the summary.
 
 Barcode-kept records are paired reads, so the reported kept-read count is twice
 the retained-pair count. BAM records are counted as individual alignments.
@@ -630,17 +650,24 @@ mean_methylation_heatmap.png
 mean_methylation_violin.png
 ```
 
-CH mode additionally generates:
+CH mode additionally generates three plot groups:
 
 ```text
-ch_site_count_heatmap.png
-mean_ch_methylation_heatmap.png
-mean_ch_methylation_violin.png
+ca_site_count_heatmap.png
+mean_ca_methylation_heatmap.png
+mean_ca_methylation_violin.png
+cc_site_count_heatmap.png
+mean_cc_methylation_heatmap.png
+mean_cc_methylation_violin.png
+ct_site_count_heatmap.png
+mean_ct_methylation_heatmap.png
+mean_ct_methylation_violin.png
 ```
 
-Both mode generates all seven plots. Heatmap axes use the zero-based barcode
+Both mode generates all thirteen plots. Heatmap axes use the zero-based barcode
 indices from the spot manifest. Each violin plot shows the distribution of mean
-methylation across spots with at least one called site in that context.
+methylation across spots with at least one called site in that context. The
+reads heatmap uses `Reds`; violin plots use an automatic y-axis range.
 
 The complete summary output directory is:
 
@@ -652,21 +679,27 @@ summary/
 ├── cpg_site_count_heatmap.png
 ├── mean_methylation_heatmap.png
 ├── mean_methylation_violin.png
-├── ch_site_count_heatmap.png
-├── mean_ch_methylation_heatmap.png
-├── mean_ch_methylation_violin.png
+├── ca_site_count_heatmap.png
+├── mean_ca_methylation_heatmap.png
+├── mean_ca_methylation_violin.png
+├── cc_site_count_heatmap.png
+├── mean_cc_methylation_heatmap.png
+├── mean_cc_methylation_violin.png
+├── ct_site_count_heatmap.png
+├── mean_ct_methylation_heatmap.png
+├── mean_ct_methylation_violin.png
 └── summary.log
 ```
 
-The CG or CH plot groups are omitted when that context is not selected.
+The CG or CA/CC/CT plot groups are omitted when that context is not selected.
 
-## 17. Stage 8: CG and CH VMR matrices
+## 17. Stage 8: CG, CA, CC, and CT VMR matrices
 
 Entry point: `script/steps/08.methscan.sh`
 
 This independent stage follows `CALL_CONTEXT_MODE`. It processes CG in `cg`
-mode, CH in `ch` mode, and runs separate CG and CH workflows sequentially in
-`both` mode after the summary stage:
+mode, processes CA, CC, and CT independently in `ch` mode, and runs all four
+workflows sequentially in `both` mode after the summary stage:
 
 ```text
 prepare -> filter -> smooth -> scan -> matrix
@@ -674,40 +707,28 @@ prepare -> filter -> smooth -> scan -> matrix
 
 For each selected context, `prepare` reads every matching
 `coverage/host/**/*.<CONTEXT>.cov` file as one spatial spot. `filter` retains
-spots with at least `METHSCAN_MIN_SITES` observed CG sites or
-`METHSCAN_CH_MIN_SITES` observed CH sites. `smooth` constructs a separate
-pseudo-bulk methylation background for each context, `scan` identifies VMRs,
-and `matrix` quantifies those regions across spots. MethSCAn defaults are used
-for smoothing and VMR detection parameters that are not exposed in the
-configuration. CG and CH sites are never combined in one MethSCAn data set.
+spots using the context-specific `METHSCAN_<CONTEXT>_MIN_SITES` threshold.
+`smooth` constructs a separate pseudo-bulk methylation background for every
+context, `scan` identifies VMRs, and `matrix` quantifies those regions across
+spots.
+MethSCAn defaults are used for smoothing and VMR detection parameters that are
+not exposed in the configuration. The four contexts are never combined in one
+MethSCAn data set.
 
 The outputs are stored in a separate top-level directory:
 
 ```text
 methscan/
 ├── CG/
-│   ├── compact/
-│   ├── filter/
-│   │   └── smoothed/
-│   ├── VMRs.bed
-│   ├── matrix/
-│   │   ├── methylated_sites.csv.gz
-│   │   ├── total_sites.csv.gz
-│   │   ├── methylation_fractions.csv.gz
-│   │   └── mean_shrunken_residuals.csv.gz
-│   └── methscan.log
-└── CH/
-    ├── compact/
-    ├── filter/
-    │   └── smoothed/
-    ├── VMRs.bed
-    ├── matrix/
-    │   ├── methylated_sites.csv.gz
-    │   ├── total_sites.csv.gz
-    │   ├── methylation_fractions.csv.gz
-    │   └── mean_shrunken_residuals.csv.gz
-    └── methscan.log
+├── CA/
+├── CC/
+└── CT/
 ```
+
+Each selected context directory contains `compact/`, `filter/smoothed/`,
+`VMRs.bed`, `matrix/`, and `methscan.log`. The matrix directory contains
+`methylated_sites.csv.gz`, `total_sites.csv.gz`,
+`methylation_fractions.csv.gz`, and `mean_shrunken_residuals.csv.gz`.
 
 Only the selected context directories are generated. The matrices written by
 MethSCAn are spot-by-VMR tables. Missing values mean that a spot has no usable
@@ -754,32 +775,3 @@ Recovered output may be incomplete. M-bias has explicit restart checks: a
 complete existing TSV/PNG pair can be reused, whereas partial output is
 rejected. Before rerunning a failed production stage, inspect its log and
 distinguish incomplete output from a valid completed result.
-
-## 19. Quality-control interpretation
-
-- M-bias should be inspected separately for R1 and R2 because library structure,
-  barcode removal, and end effects differ between mates.
-- An inferred trim cutoff is a cycle filter, not genomic soft clipping. It is
-  applied while accepting methylation observations.
-- Merged CpG mode assumes complementary CpG methylation can be summarized at one
-  forward-C coordinate. Separate mode preserves strand asymmetry and is required
-  for Cabernet.
-- Spike-in FASTQs are generated from reads rejected by DBiT barcode structure;
-  their actual identity is established only by alignment to spike references.
-- Per-site mean methylation and read-depth-weighted methylation answer different
-  questions. The summary currently reports the former.
-- Zero-based output coordinates must be converted explicitly before comparison
-  with one-based formats or tools.
-
-## 20. Known implementation constraints
-
-1. The pool stage currently names `lambda` and `puc19` explicitly even though
-   the spike alignment configuration can describe other spike-ins.
-2. Coverage `start` and `end` are equal point coordinates, not BED intervals.
-3. The summary mapped-read metric can include secondary or supplementary records
-   if they meet its mapped, MAPQ, and `NH` conditions.
-4. Saturation may be reported as unavailable when the required calculation is
-   not implemented for an input category.
-
-These constraints should be considered when extending the workflow or comparing
-its results with external methylation pipelines.

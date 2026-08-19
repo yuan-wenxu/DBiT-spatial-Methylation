@@ -21,8 +21,6 @@ import matplotlib.pyplot as plt
 
 
 PAIRED_FLAGS = {83, 99, 147, 163}
-TOP_FLAGS = {99, 147}
-BOT_FLAGS = {83, 163}
 
 # key: (read, cycle from 5' end), value: [methylated, unmethylated]
 MbiasCounts = DefaultDict[Tuple[str, int], list[int]]
@@ -129,7 +127,7 @@ def classify_taps(
     reference_sequence: str,
     min_base_quality: int,
 ) -> Optional[Tuple[bool, int]]:
-    """Return TAPS methylation status and cytosine-derived query position."""
+    """Return TAPS methylation status and caller-aligned query position."""
     sequence = record.query_sequence
     if not sequence or query_pos + 1 >= len(sequence):
         return None
@@ -143,15 +141,10 @@ def classify_taps(
         return None
 
     dinucleotide = sequence[query_pos : query_pos + 2].upper()
-    if dinucleotide == "TG":
+    if dinucleotide in {"TG", "CA"}:
         return True, query_pos
-    if dinucleotide == "CA":
-        return True, query_pos + 1
     if dinucleotide == "CG":
-        if record.flag in TOP_FLAGS:
-            return False, query_pos
-        if record.flag in BOT_FLAGS:
-            return False, query_pos + 1
+        return False, query_pos
     return None
 
 
@@ -162,7 +155,7 @@ def classify_emseq(
     reference_sequence: str,
     min_base_quality: int,
 ) -> Optional[Tuple[bool, int]]:
-    """Return EM-seq methylation status and cytosine-derived query position."""
+    """Return EM-seq methylation status and caller-aligned query position."""
     sequence = record.query_sequence
     if not sequence or query_pos + 1 >= len(sequence):
         return None
@@ -176,15 +169,10 @@ def classify_emseq(
         return None
 
     dinucleotide = sequence[query_pos : query_pos + 2].upper()
-    if dinucleotide == "TG":
+    if dinucleotide in {"TG", "CA"}:
         return False, query_pos
-    if dinucleotide == "CA":
-        return False, query_pos + 1
     if dinucleotide == "CG":
-        if record.flag in TOP_FLAGS:
-            return True, query_pos
-        if record.flag in BOT_FLAGS:
-            return True, query_pos + 1
+        return True, query_pos
     return None
 
 

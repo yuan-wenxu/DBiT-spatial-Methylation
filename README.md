@@ -98,9 +98,6 @@ RUN_MODE=hpc                 # hpc or local
 SCRATCH_ROOT=/path/to/scratch
 BARCODE_WHITELIST=           # empty uses docs/barcodes/barcodes50.tsv
 CALL_CONTEXT_MODE=both       # cg, ch, or both
-CALL_CHROMOSOMES=chr1,chr2
-METHSCAN_MIN_SITES=50000
-METHSCAN_CH_MIN_SITES=50000
 ```
 
 Set `SCRATCH_ROOT` to a directory on a fast SSD. Adjust the SLURM CPU, memory,

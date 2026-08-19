@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Aggregate CpG/CH methylation calling for mitochondrial and spike-in BAMs."""
+"""Aggregate CpG/CA/CC/CT methylation calling for mitochondrial and spike-in BAMs."""
 
 from __future__ import annotations
 
@@ -217,14 +217,27 @@ def write_outputs(args: argparse.Namespace, chromosomes: list[str]) -> tuple[int
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     cg_path = output_dir / f"{args.output_name}.CG.cov"
-    ch_path = output_dir / f"{args.output_name}.CH.cov"
+    ch_paths = {
+        context: output_dir / f"{args.output_name}.{context}.cov"
+        for context in SHARED.CH_FORWARD_CONTEXTS
+    }
     cg_temp = cg_path.with_name(f".{cg_path.name}.tmp.{os.getpid()}")
-    ch_temp = ch_path.with_name(f".{ch_path.name}.tmp.{os.getpid()}")
+    ch_temps = {
+        context: path.with_name(f".{path.name}.tmp.{os.getpid()}")
+        for context, path in ch_paths.items()
+    }
     cg_lines = 0
     ch_lines = 0
     try:
         cg_handle = cg_temp.open("w", encoding="utf-8") if args.context_mode in {"cg", "both"} else None
-        ch_handle = ch_temp.open("w", encoding="utf-8") if args.context_mode in {"ch", "both"} else None
+        ch_handles = (
+            {
+                context: ch_temps[context].open("w", encoding="utf-8")
+                for context in SHARED.CH_FORWARD_CONTEXTS
+            }
+            if args.context_mode in {"ch", "both"}
+            else {}
+        )
         try:
             with pysam.AlignmentFile(args.bam, "rb") as bam, pysam.FastaFile(
                 args.reference
@@ -241,9 +254,9 @@ def write_outputs(args: argparse.Namespace, chromosomes: list[str]) -> tuple[int
                                 )
                             )
                             cg_lines += 1
-                    if ch_handle is not None:
+                    if ch_handles:
                         for (pos, context, strand), (methylated, unmethylated) in sorted(ch_counts.items()):
-                            ch_handle.write(
+                            ch_handles[context].write(
                                 SHARED.format_ch_line(
                                     chromosome,
                                     pos,
@@ -257,15 +270,17 @@ def write_outputs(args: argparse.Namespace, chromosomes: list[str]) -> tuple[int
         finally:
             if cg_handle is not None:
                 cg_handle.close()
-            if ch_handle is not None:
+            for ch_handle in ch_handles.values():
                 ch_handle.close()
         if args.context_mode in {"cg", "both"}:
             os.replace(cg_temp, cg_path)
         if args.context_mode in {"ch", "both"}:
-            os.replace(ch_temp, ch_path)
+            for context in SHARED.CH_FORWARD_CONTEXTS:
+                os.replace(ch_temps[context], ch_paths[context])
     finally:
         cg_temp.unlink(missing_ok=True)
-        ch_temp.unlink(missing_ok=True)
+        for ch_temp in ch_temps.values():
+            ch_temp.unlink(missing_ok=True)
     return cg_lines, ch_lines
 
 
