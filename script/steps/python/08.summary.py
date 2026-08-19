@@ -138,6 +138,17 @@ def parse_cov_stats(path: Path) -> Optional[tuple[float, int]]:
     return methylation_sum / site_count, site_count
 
 
+def read_saturation_rate(path: Path) -> Optional[str]:
+    if not path.is_file():
+        return None
+    with path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        for row in reader:
+            value = (row.get("saturation_rate") or "").strip()
+            return value or None
+    return None
+
+
 def load_spot_manifest(
     path: Path,
 ) -> tuple[dict[str, tuple[str, str]], dict[str, str]]:
@@ -438,6 +449,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     coverage_dir = work_dir / "coverage"
     manifest_path = coverage_dir / "spot_manifest.tsv"
     host_bam = work_dir / "pooled" / "pooled.cb.bam"
+    saturation_summary = work_dir / "saturation" / "saturation_summary.tsv"
     if args.context_mode == "cg":
         contexts = ["cg"]
     elif args.context_mode == "ch":
@@ -471,6 +483,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     for context in contexts:
         print(f"[summary] host-{context}-cov-count={len(host_cov_paths[context])}")
     print(f"[summary] spike-names={','.join(spike_names) if spike_names else 'none'}")
+    print(f"[summary] saturation-summary={saturation_summary}")
     print(f"[summary] output-dir={output_dir}")
     if args.dry_run:
         print("[summary] dry-run=1")
@@ -497,7 +510,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             per_spot_rows,
         )
 
-        sample_row: dict[str, str] = {"saturation_rate": "NA"}
+        sample_row: dict[str, str] = {
+            "saturation_rate": read_saturation_rate(saturation_summary) or "NA"
+        }
         for context in contexts:
             spec = CONTEXT_SPECS[context]
             host_mean, host_median_sites = mean_from_rows(

@@ -27,7 +27,7 @@ The complete execution graph is:
 ```text
 fastp -> barcode -> +-> align ------+
                     |               |
-                    +-> spike-align +-> pool -> mbias -> call -> spike-call -> summary -> methscan
+                    +-> spike-align +-> pool -> mbias -> call -> spike-call -> saturation -> summary -> methscan
 ```
 
 `align` and `spike-align` can run concurrently. All later stages are ordered by
@@ -43,8 +43,9 @@ data dependency.
 | `mbias` | `script/steps/05.mbias.sh` | Estimate cycle-specific methylation bias and trim cutoffs |
 | `call` | `script/steps/06.call.sh` | Call per-spot host CG, CA, CC, and CT methylation |
 | `spike-call` | `script/steps/06.spike_call.sh` | Call aggregate mitochondrial and spike-in methylation |
-| `summary` | `script/steps/07.summary.sh` | Produce QC tables and plots |
-| `methscan` | `script/steps/08.methscan.sh` | Detect context-specific VMRs and construct spot-by-VMR matrices |
+| `saturation` | `script/steps/07.saturation.sh` | Estimate host CpG saturation across spots |
+| `summary` | `script/steps/08.summary.sh` | Produce QC tables and plots |
+| `methscan` | `script/steps/09.methscan.sh` | Detect context-specific VMRs and construct spot-by-VMR matrices |
 
 ## 3. Installation and runtime environment
 
@@ -174,7 +175,14 @@ The main calling controls include:
   least `CALL_JOBS` intervals when their length permits
 - parallel caller job count
 
-### 5.4 MethSCAn configuration
+### 5.4 Saturation configuration
+
+`SATURATION_READS_THRESHOLD` selects high-read spots. The stage predicts at
+`SATURATION_PRED_FRACTION` and uses `SATURATION_LINEAR_R2_THRESHOLD` to choose
+between linear and saturation-curve extrapolation. `SATURATION_*` Slurm fields
+control its standalone job.
+
+### 5.5 MethSCAn configuration
 
 The independent MethSCAn stage uses:
 
@@ -557,12 +565,39 @@ spike_call.log
 These files use the host calling rules: CG is strand-merged, while CA, CC, and
 CT retain context and strand.
 
-## 16. Stage 7: summary and visualization
+## 16. Stage 7: CpG saturation
 
 Entry points:
 
-- `script/steps/07.summary.sh`
-- `script/steps/python/07.summary.py`
+- `script/steps/07.saturation.sh`
+- `script/steps/python/07.saturation.py`
+
+The stage counts reads per spot from `pooled/pooled.cb.bam`, selects spots above
+`SATURATION_READS_THRESHOLD`, and reads their
+`coverage/host/**/*.CG.cov` files. For each subsampling fraction it estimates
+the expected unique CpGs from per-site depth, summarizes spots by median and
+IQR, then fits a through-origin linear model and an exponential saturation
+curve. A strong linear fit is reported as unsaturated with `saturation_rate=NA`.
+
+Outputs are:
+
+```text
+saturation/
+├── saturation_curve.png
+├── saturation_summary.tsv
+└── saturation.log
+```
+
+The summary table reports observed and predicted median unique CpGs, the fitted
+model, saturation rate, and number of high-read spots. If no usable spots exist,
+the stage writes valid outputs containing `NA` values.
+
+## 17. Stage 8: summary and visualization
+
+Entry points:
+
+- `script/steps/08.summary.sh`
+- `script/steps/python/08.summary.py`
 
 The summary stage combines barcode statistics, fastp metrics, pooled BAM
 metrics, per-spot host coverage, and aggregate mitochondrial/spike-in coverage.
@@ -570,7 +605,7 @@ It follows `CALL_CONTEXT_MODE`: `cg` summarizes CG files, `ch` summarizes CA,
 CC, and CT files separately, and `both` summarizes all four contexts. It does
 not require or emit a sample-ID field.
 
-### 16.1 Inputs
+### 17.1 Inputs
 
 The principal inputs are:
 
@@ -582,11 +617,12 @@ The principal inputs are:
 - `coverage/host_mito.<context>.cov`, when produced
 - `coverage/<spike>.<context>.cov`, when produced
 - corresponding pooled spike-in BAMs
+- `saturation/saturation_summary.tsv`
 
 Here, `<context>` is `CG`, `CA`, `CC`, or `CT` according to
 `CALL_CONTEXT_MODE`.
 
-### 16.2 Per-spot metrics
+### 17.2 Per-spot metrics
 
 `per_spot_summary.tsv` contains one row for every manifest spot, including spots
 with zero reads or zero called sites. It always reports spatial indices and read
@@ -608,7 +644,7 @@ Each CG, CA, CC, or CT row therefore has equal weight within its context. This
 is not a read-depth-weighted ratio of total methylated observations to total
 observations.
 
-### 16.3 Sample-level metrics
+### 17.3 Sample-level metrics
 
 `sample_summary.tsv` reports workflow-wide values including:
 
@@ -618,7 +654,7 @@ observations.
 - host alignment records assigned to valid paired-end orientations
 - host mean methylation and median per-spot site count for each selected context
 - mitochondrial and spike-in mean methylation for each selected context
-- saturation fields where supported
+- `saturation_rate` from Stage 7, or `NA` when unavailable
 
 Within each context, the host-wide mean weights each spot mean by its site count,
 which is equivalent to giving every spot-by-site output row equal weight.
@@ -634,7 +670,7 @@ one. This metric does not independently remove secondary or supplementary
 records; interpret it as the implementation's QC count rather than a guaranteed
 count of primary fragments.
 
-### 16.4 Plots
+### 17.4 Plots
 
 The reads heatmap is always generated:
 
@@ -693,9 +729,9 @@ summary/
 
 The CG or CA/CC/CT plot groups are omitted when that context is not selected.
 
-## 17. Stage 8: CG, CA, CC, and CT VMR matrices
+## 18. Stage 9: CG, CA, CC, and CT VMR matrices
 
-Entry point: `script/steps/08.methscan.sh`
+Entry point: `script/steps/09.methscan.sh`
 
 This independent stage follows `CALL_CONTEXT_MODE`. It processes CG in `cg`
 mode, processes CA, CC, and CT independently in `ch` mode, and runs all four
@@ -735,7 +771,7 @@ MethSCAn are spot-by-VMR tables. Missing values mean that a spot has no usable
 observation in that VMR; they are not zero methylation. This stage does not
 perform the iterative-PCA imputation used in some downstream analyses.
 
-## 18. Complete output layout
+## 19. Complete output layout
 
 A successful full run normally has the following structure:
 
@@ -748,6 +784,7 @@ dbitm/
 ├── pooled/
 ├── mbias/
 ├── coverage/
+├── saturation/
 ├── summary/
 └── methscan/
 ```
@@ -755,7 +792,7 @@ dbitm/
 Exact files depend on `MBIAS_MODE`, `CALL_CONTEXT_MODE`, `SPIKE_CALL_MODE`, and
 the configured references.
 
-## 19. Scratch storage and restart behavior
+## 20. Scratch storage and restart behavior
 
 When `SCRATCH_ROOT` is configured, stages create isolated temporary workspaces
 under a `dbitm` subdirectory, copy or stage the required inputs, and remove the

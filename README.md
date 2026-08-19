@@ -155,6 +155,7 @@ dbitm taps pool --input /path/to/sample/fastq
 dbitm taps mbias --input /path/to/sample/fastq
 dbitm taps call --input /path/to/sample/fastq
 dbitm taps spike-call --input /path/to/sample/fastq
+dbitm taps saturation --input /path/to/sample/fastq
 dbitm taps summary --input /path/to/sample/fastq
 dbitm taps methscan --input /path/to/sample/fastq
 ```
@@ -162,7 +163,7 @@ dbitm taps methscan --input /path/to/sample/fastq
 The required order is:
 
 ```text
-fastp -> barcode -> (align + spike-align) -> pool -> mbias -> call -> spike-call -> summary -> methscan
+fastp -> barcode -> (align + spike-align) -> pool -> mbias -> call -> spike-call -> saturation -> summary -> methscan
 ```
 
 Use another configuration file with:
@@ -186,6 +187,7 @@ sample/
     ├── pooled/
     ├── mbias/
     ├── coverage/
+    ├── saturation/
     ├── summary/
     └── methscan/
 ```

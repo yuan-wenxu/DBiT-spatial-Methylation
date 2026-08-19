@@ -26,7 +26,7 @@ enable_cleanup() {
 }
 
 if (( $# < 2 || $# > 3 )); then
-    echo "Usage: 07.summary.sh <assay> <raw_fastq_folder> [--dry-run]" >&2
+    echo "Usage: 08.summary.sh <assay> <raw_fastq_folder> [--dry-run]" >&2
     exit 1
 fi
 assay=$1
@@ -61,7 +61,7 @@ source "$config_file"
 raw_abs=$(realpath "$raw_path")
 final_dir=$(dirname "$raw_abs")/dbitm
 output_dir=$final_dir/summary
-summary_script=$REPO_DIR/script/steps/python/07.summary.py
+summary_script=$REPO_DIR/script/steps/python/08.summary.py
 if [[ ! -f "$summary_script" ]]; then
     echo "[dbitm] summary: Python script not found: $summary_script" >&2
     exit 1

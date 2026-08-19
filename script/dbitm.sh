@@ -10,7 +10,7 @@ Main control script for DBiT-spatial-Methylation pipeline.
 
 Arguments:
   assay          Assay type: taps | taps-v2 | emseq | cabernet
-  step           Pipeline step: fastp | barcode | align | spike-align | pool | mbias | call | spike-call | summary | methscan | all
+  step           Pipeline step: fastp | barcode | align | spike-align | pool | mbias | call | spike-call | saturation | summary | methscan | all
   --input PATH   Raw FASTQ directory path
   --config PATH  Optional config file (default: config/dbitm.config.sh)
   --dry-run      Validate and print the execution plan without writing outputs
@@ -21,7 +21,7 @@ Execution mode is controlled by RUN_MODE in the config file:
   RUN_MODE=hpc     Submit step via sbatch (default)
 
 The all step runs/submits:
-  fastp -> barcode -> (align + spike-align) -> pool -> mbias -> call -> spike-call -> summary -> methscan
+  fastp -> barcode -> (align + spike-align) -> pool -> mbias -> call -> spike-call -> saturation -> summary -> methscan
 
 Examples:
   dbitm.sh taps fastp --input /data/raw
@@ -47,10 +47,11 @@ declare -A STEP_SCRIPTS=(
     [mbias]=05.mbias.sh
     [call]=06.call.sh
     [spike-call]=06.spike_call.sh
-    [summary]=07.summary.sh
-    [methscan]=08.methscan.sh
+    [saturation]=07.saturation.sh
+    [summary]=08.summary.sh
+    [methscan]=09.methscan.sh
 )
-ALL_STEPS=(fastp barcode align spike-align pool mbias call spike-call summary methscan)
+ALL_STEPS=(fastp barcode align spike-align pool mbias call spike-call saturation summary methscan)
 
 # ── parse positional arguments ──
 case "${1:-}" in
@@ -263,7 +264,7 @@ run_all_local() {
 
 submit_all_hpc() {
     local fastp_job_id barcode_job_id align_job_id spike_align_job_id
-    local pool_job_id mbias_job_id call_job_id spike_call_job_id summary_job_id methscan_job_id step_name
+    local pool_job_id mbias_job_id call_job_id spike_call_job_id saturation_job_id summary_job_id methscan_job_id step_name
 
     echo "[dbitm] submitting complete pipeline with Slurm dependencies..."
     for step_name in "${ALL_STEPS[@]}"; do
@@ -294,7 +295,10 @@ submit_all_hpc() {
     submit_step spike-call "$call_job_id"
     spike_call_job_id=$SUBMITTED_JOB_ID
 
-    submit_step summary "$spike_call_job_id"
+    submit_step saturation "$spike_call_job_id"
+    saturation_job_id=$SUBMITTED_JOB_ID
+
+    submit_step summary "$saturation_job_id"
     summary_job_id=$SUBMITTED_JOB_ID
 
     submit_step methscan "$summary_job_id"
@@ -305,7 +309,7 @@ submit_all_hpc() {
     else
         echo "[dbitm] complete pipeline submitted successfully"
     fi
-    echo "[dbitm] job IDs: fastp=$fastp_job_id barcode=$barcode_job_id align=$align_job_id spike-align=$spike_align_job_id pool=$pool_job_id mbias=$mbias_job_id call=$call_job_id spike-call=$spike_call_job_id summary=$summary_job_id methscan=$methscan_job_id"
+    echo "[dbitm] job IDs: fastp=$fastp_job_id barcode=$barcode_job_id align=$align_job_id spike-align=$spike_align_job_id pool=$pool_job_id mbias=$mbias_job_id call=$call_job_id spike-call=$spike_call_job_id saturation=$saturation_job_id summary=$summary_job_id methscan=$methscan_job_id"
 }
 
 if [[ "$RUN_MODE" == hpc ]]; then

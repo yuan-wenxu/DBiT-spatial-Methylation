@@ -26,7 +26,7 @@ enable_cleanup() {
 }
 
 if (( $# < 2 || $# > 3 )); then
-    echo "Usage: 08.methscan.sh <assay> <raw_fastq_folder> [--dry-run]" >&2
+    echo "Usage: 09.methscan.sh <assay> <raw_fastq_folder> [--dry-run]" >&2
     exit 1
 fi
 assay=$1
