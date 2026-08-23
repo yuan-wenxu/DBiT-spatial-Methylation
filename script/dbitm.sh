@@ -22,13 +22,6 @@ Execution mode is controlled by RUN_MODE in the config file:
 
 The all step runs/submits:
   fastp -> barcode -> (align + spike-align) -> pool -> mbias -> call -> spike-call -> saturation -> summary -> methscan
-
-Examples:
-  dbitm.sh taps fastp --input /data/raw
-  dbitm.sh emseq align --input /data/raw --config my_config.sh
-  dbitm.sh taps spike-align --input /data/raw --config my_config.sh
-  dbitm.sh taps all --input /data/raw --config my_config.sh --dry-run
-  dbitm.sh emseq all --input /data/raw --config my_config.sh
 EOF
     exit "$status"
 }
