@@ -462,7 +462,7 @@ The cutoff program smooths the methylation-rate profile, estimates a central
 baseline, rejects poorly covered cycles, and searches from both ends for a
 stable run within the configured tolerance. The default controls are:
 
-- methylation-rate tolerance: 0.02
+- methylation-rate tolerance: `MBIAS_CUTOFF_RATE_TOLERANCE` (default 0.05)
 - minimum coverage relative to the central region: 0.10
 - absolute minimum coverage: 100
 - smoothing window: 5 cycles

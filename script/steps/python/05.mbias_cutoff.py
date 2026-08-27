@@ -45,8 +45,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--rate-tolerance",
         type=float,
-        default=0.02,
-        help="Maximum absolute methylation-rate deviation from baseline. Default: 0.02.",
+        default=0.05,
+        help="Maximum absolute methylation-rate deviation from baseline. Default: 0.05.",
     )
     parser.add_argument(
         "--coverage-fraction",

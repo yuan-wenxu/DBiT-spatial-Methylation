@@ -58,6 +58,7 @@ if [[ ! -f "$config_file" ]]; then
 fi
 source "$config_file"
 MBIAS_R1_ORIGINAL_LENGTH=${MBIAS_R1_ORIGINAL_LENGTH:-150}
+MBIAS_CUTOFF_RATE_TOLERANCE=${MBIAS_CUTOFF_RATE_TOLERANCE:-0.05}
 
 case "$MBIAS_MODE" in
     all|host|spike) ;;
@@ -173,6 +174,7 @@ infer_target_cutoffs() {
         --mbias-tsv "$run_output/$label.mbias.tsv" \
         --output "$cutoff_path" \
         --r1-original-length "$MBIAS_R1_ORIGINAL_LENGTH" \
+        --rate-tolerance "$MBIAS_CUTOFF_RATE_TOLERANCE" \
         >> "$log_path" 2>&1; then
         if [[ "$use_scratch" == true ]]; then
             mkdir -p "$output_dir"
