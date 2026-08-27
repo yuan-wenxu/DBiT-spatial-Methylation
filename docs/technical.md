@@ -166,7 +166,7 @@ as `00` through `49`.
 The main calling controls include:
 
 - `CALL_CONTEXT_MODE`: `cg`, `ch`, or `both`
-- `CALL_CHROMOSOMES`: host chromosomes to call
+- `CALL_CHROMOSOMES`: host chromosomes to call; host M-bias is sampled from these contigs only
 - `CALL_MITO_CHROMOSOMES`: mitochondrial contigs to call
 - `SPIKE_CALL_MODE`: `all`, `mito`, or `spike`
 - minimum mapping and base qualities
@@ -420,9 +420,14 @@ Entry points:
 
 ### 13.1 Target selection and filtering
 
-`MBIAS_MODE` selects `host`, `spike`, or `all`. Host analysis uses a
-deterministic pseudo-random read fraction and an optional record cap; the example
-configuration uses a 0.1 host fraction and a maximum of 10,000,000 records.
+`MBIAS_MODE` selects `host`, `spike`, or `all`. Host analysis is restricted to
+the `CALL_CHROMOSOMES` contigs, so reads mapped outside that list — including
+mitochondrial reads present in the pooled host BAM — never enter host M-bias
+statistics; the stage fails fast when `CALL_CHROMOSOMES` is unset or empty in
+`host` or `all` mode. Spike-in targets scan all contigs of their own references
+without this restriction. Host analysis uses a deterministic pseudo-random read
+fraction and an optional record cap; the example configuration uses a 0.1 host
+fraction and a maximum of 10,000,000 records.
 Spike-in targets are analyzed without host-style subsampling.
 
 M-bias excludes unmapped, secondary, supplementary, unsupported paired-end
@@ -436,7 +441,10 @@ CG and does not generate separate CA, CC, or CT profiles.
 For each R1/R2 cycle, the program records methylated, unmethylated, and total
 CpG observations. Plus- and minus-family CpG evidence is combined in the same
 counter, using the caller-aligned query position without a one-base shift.
-TSV rates are fractions from 0 to 1; plots use percentages from 0 to 100.
+Cycles whose total coverage does not exceed
+`MBIAS_MIN_CYCLE_COVERAGE` (default 500) are skipped and never reach the TSV,
+PNG, or cutoff inference. TSV rates are fractions from 0 to 1; plots use
+percentages from 0 to 100.
 
 Each selected target produces:
 
@@ -465,8 +473,8 @@ complete TSV/PNG outputs can be reused, while incomplete output sets are treated
 as errors to prevent mixing stale and current results. When a target has no
 usable cycles, or no stable region within tolerance can be found for either
 read, inference is skipped instead of failing and the target receives a
-zero-byte cutoff marker; spike calling skips that target and host calling
-proceeds without trimming.
+zero-byte cutoff marker; host, mitochondrial, and spike-in calling proceed
+without trimming.
 
 ## 14. Stage 6A: per-spot host methylation calling
 

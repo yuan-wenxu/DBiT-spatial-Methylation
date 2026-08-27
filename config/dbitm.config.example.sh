@@ -68,6 +68,8 @@ MBIAS_HOST_SUBSAMPLE_FRACTION=${MBIAS_HOST_SUBSAMPLE_FRACTION:-0.1}
 # Maximum selected host alignment records; 0 disables the limit.
 MBIAS_HOST_MAX_RECORDS=${MBIAS_HOST_MAX_RECORDS:-10000000}
 MBIAS_MAX_CYCLE=${MBIAS_MAX_CYCLE:-150}
+# Cycles whose total CpG coverage does not exceed this are skipped in M-bias outputs.
+MBIAS_MIN_CYCLE_COVERAGE=${MBIAS_MIN_CYCLE_COVERAGE:-500}
 # Original R1 length before barcode removal; 0 uses trimmed-R1-relative cycles.
 MBIAS_R1_ORIGINAL_LENGTH=${MBIAS_R1_ORIGINAL_LENGTH:-150}
 MBIAS_MIN_BASE_QUALITY=${MBIAS_MIN_BASE_QUALITY:-30}

@@ -180,14 +180,18 @@ run_target() {
         return 1
     fi
     if [[ ! -s "$cutoff_path" ]]; then
-        echo "[dbitm] spike-call: no M-bias data for $output_name; skipping target"
-        return 0
+        echo "[dbitm] spike-call: no suitable M-bias cutoff for $output_name; continuing without trimming"
+        r1_left=0
+        r1_right=0
+        r2_left=0
+        r2_right=0
+    else
+        if ! trims=$(load_trims "$cutoff_path"); then
+            echo "[dbitm] spike-call: invalid M-bias cutoff ($output_name): $cutoff_path" >&2
+            return 1
+        fi
+        IFS=$'\t' read -r r1_left r1_right r2_left r2_right <<< "$trims"
     fi
-    if ! trims=$(load_trims "$cutoff_path"); then
-        echo "[dbitm] spike-call: invalid M-bias cutoff ($output_name): $cutoff_path" >&2
-        return 1
-    fi
-    IFS=$'\t' read -r r1_left r1_right r2_left r2_right <<< "$trims"
 
     if [[ "$use_scratch" == true ]]; then
         local target_input=$scratch_input/$output_name

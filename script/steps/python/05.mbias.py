@@ -11,7 +11,7 @@ import random
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import DefaultDict, Optional, Tuple
+from typing import DefaultDict, List, Optional, Set, Tuple
 
 import matplotlib
 import pysam
@@ -41,6 +41,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--bam", required=True, help="Input pooled BAM.")
     parser.add_argument("--reference", required=True, help="Reference FASTA with .fai index.")
+    parser.add_argument(
+        "--chromosomes",
+        default="",
+        help=(
+            "Optional comma-separated contigs to include; alignments on any "
+            "other contig are ignored. Default: all contigs."
+        ),
+    )
     parser.add_argument("--label", required=True, help="Output label, for example host or lambda or puc19.")
     parser.add_argument("--output-dir", required=True, help="Directory for TSV and PNG outputs.")
     parser.add_argument(
@@ -58,6 +66,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42, help="Sampling seed. Default: 42.")
     parser.add_argument(
         "--max-cycle", type=int, default=150, help="Maximum cycle to report. Default: 150."
+    )
+    parser.add_argument(
+        "--min-cycle-coverage",
+        type=int,
+        default=500,
+        help=(
+            "Skip cycles whose total CpG coverage does not exceed this value "
+            "from the TSV and PNG outputs. Default: 500."
+        ),
     )
     parser.add_argument(
         "--r1-original-length",
@@ -93,6 +110,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("max-records must be >= 0")
     if args.max_cycle <= 0:
         raise ValueError("max-cycle must be > 0")
+    if args.min_cycle_coverage < 0:
+        raise ValueError("min-cycle-coverage must be >= 0")
     if args.r1_original_length < 0:
         raise ValueError("r1-original-length must be >= 0")
     if args.min_base_quality < 0:
@@ -108,6 +127,42 @@ def validate_args(args: argparse.Namespace) -> None:
         raise FileNotFoundError(f"input BAM not found: {bam_path}")
     if not reference_path.is_file():
         raise FileNotFoundError(f"reference FASTA not found: {reference_path}")
+    validate_chromosome_selection(args, parse_selected_chromosomes(args.chromosomes))
+
+
+def parse_selected_chromosomes(raw: str) -> List[str]:
+    selected: List[str] = []
+    seen: Set[str] = set()
+    for name in raw.split(","):
+        name = name.strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        selected.append(name)
+    return selected
+
+
+def validate_chromosome_selection(
+    args: argparse.Namespace, selected: List[str]
+) -> None:
+    if not selected:
+        return
+    try:
+        with pysam.AlignmentFile(args.bam, "rb") as bam_file:
+            bam_references = set(bam_file.references)
+        with pysam.FastaFile(args.reference) as fasta:
+            fasta_references = set(fasta.references)
+    except (OSError, ValueError) as error:
+        raise ValueError(f"cannot inspect BAM/FASTA for --chromosomes: {error}")
+    missing_bam = [name for name in selected if name not in bam_references]
+    missing_fasta = [name for name in selected if name not in fasta_references]
+    problems: List[str] = []
+    if missing_bam:
+        problems.append(f"absent from BAM header: {','.join(missing_bam)}")
+    if missing_fasta:
+        problems.append(f"absent from FASTA index: {','.join(missing_fasta)}")
+    if problems:
+        raise ValueError("--chromosomes selection invalid (" + "; ".join(problems) + ")")
 
 
 def base_quality_passes(
@@ -204,7 +259,9 @@ def add_observation(
         counts[(read_label, cycle_from_5p)][value_index] += 1
 
 
-def count_mbias(args: argparse.Namespace) -> Tuple[MbiasCounts, int, int, int]:
+def count_mbias(
+    args: argparse.Namespace, selected_chromosomes: List[str]
+) -> Tuple[MbiasCounts, int, int, int]:
     counts: MbiasCounts = defaultdict(lambda: [0, 0])
     rng = random.Random(args.seed)
     records_scanned = 0
@@ -217,7 +274,15 @@ def count_mbias(args: argparse.Namespace) -> Tuple[MbiasCounts, int, int, int]:
     ):
         current_contig: Optional[str] = None
         reference_sequence = ""
-        for record in bam_file.fetch(until_eof=True):
+        if selected_chromosomes:
+            record_iterator = (
+                record
+                for chromosome in selected_chromosomes
+                for record in bam_file.fetch(chromosome)
+            )
+        else:
+            record_iterator = bam_file.fetch(until_eof=True)
+        for record in record_iterator:
             records_scanned += 1
             if record.is_unmapped or record.is_secondary or record.is_supplementary:
                 continue
@@ -354,6 +419,7 @@ def write_png(
 def main() -> int:
     args = parse_args()
     validate_args(args)
+    selected_chromosomes = parse_selected_chromosomes(args.chromosomes)
     output_dir = Path(args.output_dir)
     output_tsv = output_dir / f"{args.label}.mbias.tsv"
     output_png = output_dir / f"{args.label}.mbias.png"
@@ -362,9 +428,14 @@ def main() -> int:
     print(f"[mbias] label={args.label}")
     print(f"[mbias] bam={args.bam}")
     print(f"[mbias] reference={args.reference}")
+    print(
+        "[mbias] chromosomes="
+        + (",".join(selected_chromosomes) if selected_chromosomes else "all")
+    )
     print(f"[mbias] subsample-fraction={args.subsample_fraction}")
     print(f"[mbias] max-records={args.max_records or 'unlimited'}")
     print(f"[mbias] max-cycle={args.max_cycle}")
+    print(f"[mbias] min-cycle-coverage={args.min_cycle_coverage}")
     print(f"[mbias] r1-original-length={args.r1_original_length or 'trimmed-relative'}")
     print(f"[mbias] output-tsv={output_tsv}")
     print(f"[mbias] output-png={output_png}")
@@ -381,7 +452,14 @@ def main() -> int:
         )
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    counts, scanned, selected, observations = count_mbias(args)
+    counts, scanned, selected, observations = count_mbias(args, selected_chromosomes)
+    total_cycles = len(counts)
+    # keep a cycle only when coverage strictly exceeds the threshold
+    counts = {
+        key: values
+        for key, values in counts.items()
+        if sum(values) > args.min_cycle_coverage
+    }
     tsv_temporary = output_tsv.with_name(f".{output_tsv.name}.tmp.{os.getpid()}")
     png_temporary = output_png.with_name(f".{output_png.name}.tmp.{os.getpid()}")
     try:
@@ -400,6 +478,11 @@ def main() -> int:
         tsv_temporary.unlink(missing_ok=True)
         png_temporary.unlink(missing_ok=True)
 
+    print(
+        f"[mbias] cycles-total={total_cycles} "
+        f"cycles-dropped-below-coverage={total_cycles - len(counts)} "
+        f"cycles-kept={len(counts)}"
+    )
     print(f"[mbias] records-scanned={scanned}")
     print(f"[mbias] records-selected={selected}")
     print(f"[mbias] cpg-observations={observations}")
