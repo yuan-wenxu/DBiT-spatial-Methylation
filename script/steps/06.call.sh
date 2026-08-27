@@ -137,6 +137,12 @@ if [[ "$cutoff_available" == false ]]; then
     call_r1_right_trim=auto
     call_r2_left_trim=auto
     call_r2_right_trim=auto
+elif [[ ! -s "$cutoff_path" ]]; then
+    echo "[dbitm] call: no suitable host M-bias cutoff; continuing without trimming"
+    call_r1_left_trim=0
+    call_r1_right_trim=0
+    call_r2_left_trim=0
+    call_r2_right_trim=0
 else
     if ! trim_values=$(load_trims "$cutoff_path"); then
         echo "[dbitm] call: invalid host M-bias cutoff: $cutoff_path" >&2

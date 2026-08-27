@@ -273,19 +273,31 @@ def main() -> int:
         print(f"[mbias-cutoff] no usable cycles for: {', '.join(reads_without_data)}")
         print(f"[mbias-cutoff] output={output}")
         return 0
-    cutoffs = [
-        infer_cutoff(
-            read,
-            points[read],
-            args.r1_original_length,
-            args.rate_tolerance,
-            args.coverage_fraction,
-            args.min_coverage,
-            args.smoothing_window,
-            args.stable_cycles,
-        )
-        for read in ("R1", "R2")
-    ]
+    cutoffs: list[Cutoff] = []
+    failed_reads: list[str] = []
+    for read in ("R1", "R2"):
+        try:
+            cutoffs.append(
+                infer_cutoff(
+                    read,
+                    points[read],
+                    args.r1_original_length,
+                    args.rate_tolerance,
+                    args.coverage_fraction,
+                    args.min_coverage,
+                    args.smoothing_window,
+                    args.stable_cycles,
+                )
+            )
+        except ValueError as error:
+            failed_reads.append(read)
+            print(f"[mbias-cutoff] warning: {error}")
+    if failed_reads:
+        output = Path(args.output)
+        write_empty(output)
+        print(f"[mbias-cutoff] no suitable cutoff for: {', '.join(failed_reads)}")
+        print(f"[mbias-cutoff] output={output} (empty; no trimming will be applied)")
+        return 0
     output = Path(args.output)
     write_cutoffs(output, cutoffs)
     for cutoff in cutoffs:

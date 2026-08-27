@@ -462,8 +462,11 @@ stable run within the configured tolerance. The default controls are:
 
 The resulting table contains left and right trim values for R1 and R2. Existing
 complete TSV/PNG outputs can be reused, while incomplete output sets are treated
-as errors to prevent mixing stale and current results. A target without usable
-cycles receives a zero-byte cutoff marker; spike calling skips that target.
+as errors to prevent mixing stale and current results. When a target has no
+usable cycles, or no stable region within tolerance can be found for either
+read, inference is skipped instead of failing and the target receives a
+zero-byte cutoff marker; spike calling skips that target and host calling
+proceeds without trimming.
 
 ## 14. Stage 6A: per-spot host methylation calling
 
@@ -481,7 +484,9 @@ parallel, while chromosome dispatch remains controlled by the shell stage.
 
 The host shell stage reads only `host.mbias.cutoffs.tsv` and passes its four
 trim values to the per-spot host caller. Mitochondrial and spike-in cutoff
-tables are consumed separately by the Stage 6B aggregate caller.
+tables are consumed separately by the Stage 6B aggregate caller. A zero-byte
+host cutoff table means no suitable cutoff was inferred; the host caller then
+runs with zero trimming on all read ends.
 
 Trim decisions use molecular 5-prime and 3-prime positions and therefore account
 for reverse-aligned reads. They do not use raw BAM query positions as if every
