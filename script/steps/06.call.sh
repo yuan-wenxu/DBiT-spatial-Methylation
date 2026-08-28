@@ -132,6 +132,18 @@ if [[ ! -f "$cutoff_path" ]]; then
         exit 1
     fi
 fi
+
+echo "====== dbitm call ======"
+echo "[dbitm] assay: $assay"
+echo "[dbitm] reference: $reference"
+echo "[dbitm] barcode whitelist: $barcode_whitelist"
+echo "[dbitm] pooled BAM: $pooled_bam"
+echo "[dbitm] chromosomes: $CALL_CHROMOSOMES"
+echo "[dbitm] context mode: $caller_context_mode"
+echo "[dbitm] host M-bias cutoff: $cutoff_path"
+echo "[dbitm] config: $config_file"
+echo "[dbitm] output directory: $final_dir/coverage"
+
 if [[ "$cutoff_available" == false ]]; then
     call_r1_left_trim=auto
     call_r1_right_trim=auto
@@ -163,21 +175,11 @@ else
     done
 fi
 
+echo "[dbitm] trimming: R1=${call_r1_left_trim},${call_r1_right_trim} R2=${call_r2_left_trim},${call_r2_right_trim}"
+
 use_scratch=false
 run_bam=$pooled_bam
 run_output=$final_dir/coverage
-
-echo "====== dbitm call ======"
-echo "[dbitm] assay: $assay"
-echo "[dbitm] reference: $reference"
-echo "[dbitm] barcode whitelist: $barcode_whitelist"
-echo "[dbitm] pooled BAM: $pooled_bam"
-echo "[dbitm] chromosomes: $CALL_CHROMOSOMES"
-echo "[dbitm] context mode: $caller_context_mode"
-echo "[dbitm] host M-bias cutoff: $cutoff_path"
-echo "[dbitm] trimming: R1=${call_r1_left_trim},${call_r1_right_trim} R2=${call_r2_left_trim},${call_r2_right_trim}"
-echo "[dbitm] config: $config_file"
-echo "[dbitm] output directory: $final_dir/coverage"
 
 if [[ "$dry_run" == true ]]; then
     if [[ -n ${SCRATCH_ROOT:-} && "$SCRATCH_ROOT" != /* ]]; then

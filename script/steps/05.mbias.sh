@@ -119,6 +119,14 @@ if [[ ! -d "$pooled_dir" ]]; then
     fi
 fi
 
+echo "====== dbitm mbias ======"
+echo "[dbitm] assay: $assay"
+echo "[dbitm] mode: $MBIAS_MODE"
+echo "[dbitm] pooled directory: $pooled_dir"
+echo "[dbitm] output directory: $output_dir"
+echo "[dbitm] host M-bias chromosomes: ${CALL_CHROMOSOMES:-all}"
+echo "[dbitm] config: $config_file"
+
 use_scratch=false
 log_path=/dev/null
 if [[ "$dry_run" == true ]]; then
@@ -152,14 +160,6 @@ else
     log_path=$run_output/mbias.log
     : > "$log_path"
 fi
-
-echo "====== dbitm mbias ======"
-echo "[dbitm] assay: $assay"
-echo "[dbitm] mode: $MBIAS_MODE"
-echo "[dbitm] pooled directory: $pooled_dir"
-echo "[dbitm] output directory: $output_dir"
-echo "[dbitm] host M-bias chromosomes: ${CALL_CHROMOSOMES:-all}"
-echo "[dbitm] config: $config_file"
 
 infer_target_cutoffs() {
     local label=$1
