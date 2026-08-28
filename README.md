@@ -160,12 +160,12 @@ Run individual steps when needed:
 ```bash
 dbitm taps fastp --input /path/to/sample/fastq
 dbitm taps barcode --input /path/to/sample/fastq
-dbitm taps align --input /path/to/sample/fastq
 dbitm taps spike-align --input /path/to/sample/fastq
+dbitm taps align --input /path/to/sample/fastq
 dbitm taps pool --input /path/to/sample/fastq
 dbitm taps mbias --input /path/to/sample/fastq
-dbitm taps call --input /path/to/sample/fastq
 dbitm taps spike-call --input /path/to/sample/fastq
+dbitm taps call --input /path/to/sample/fastq
 dbitm taps saturation --input /path/to/sample/fastq
 dbitm taps summary --input /path/to/sample/fastq
 dbitm taps methscan --input /path/to/sample/fastq
@@ -174,7 +174,8 @@ dbitm taps methscan --input /path/to/sample/fastq
 The required order is:
 
 ```text
-fastp -> barcode -> (align + spike-align) -> pool -> mbias -> call -> spike-call -> saturation -> summary -> methscan
+fastp -> barcode -> (spike-align + align) -> pool -> mbias -+-> spike-call ---------+
+                                                           +-> call -> saturation -+-> summary -> methscan
 ```
 
 Use another configuration file with:

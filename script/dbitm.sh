@@ -10,7 +10,7 @@ Main control script for DBiT-spatial-Methylation pipeline.
 
 Arguments:
   assay          Assay type: taps | taps-v2 | emseq | cabernet
-  step           Pipeline step: fastp | barcode | align | spike-align | pool | mbias | call | spike-call | saturation | summary | methscan | all
+  step           Pipeline step: fastp | barcode | spike-align | align | pool | mbias | spike-call | call | saturation | summary | methscan | all
   --input PATH   Raw FASTQ directory path
   --config PATH  Optional config file (default: config/dbitm.config.sh)
   --resume STEP  With step=all, start at STEP and run/submit all later steps
@@ -22,7 +22,8 @@ Execution mode is controlled by RUN_MODE in the config file:
   RUN_MODE=hpc     Submit step via sbatch (default)
 
 The all step runs/submits (or resumes from --resume):
-  fastp -> barcode -> (align + spike-align) -> pool -> mbias -> call -> spike-call -> saturation -> summary -> methscan
+  fastp -> barcode -> (spike-align + align) -> pool -> mbias -+-> spike-call ---------+
+                                                              +-> call -> saturation -+-> summary -> methscan
 EOF
     exit "$status"
 }
@@ -35,17 +36,17 @@ STEPS_DIR="$SCRIPT_DIR/steps"
 declare -A STEP_SCRIPTS=(
     [fastp]=01.fastp.sh
     [barcode]=02.barcode.sh
-    [align]=03.align.sh
     [spike-align]=03.spike_align.sh
+    [align]=03.align.sh
     [pool]=04.pool.sh
     [mbias]=05.mbias.sh
-    [call]=06.call.sh
     [spike-call]=06.spike_call.sh
+    [call]=06.call.sh
     [saturation]=07.saturation.sh
     [summary]=08.summary.sh
     [methscan]=09.methscan.sh
 )
-ALL_STEPS=(fastp barcode align spike-align pool mbias call spike-call saturation summary methscan)
+ALL_STEPS=(fastp barcode spike-align align pool mbias spike-call call saturation summary methscan)
 
 # ── parse positional arguments ──
 case "${1:-}" in
@@ -297,14 +298,14 @@ submit_pipeline_hpc() {
     local -A prerequisites=(
         [fastp]=""
         [barcode]="fastp"
-        [align]="barcode"
         [spike-align]="barcode"
-        [pool]="align spike-align"
+        [align]="barcode"
+        [pool]="spike-align align"
         [mbias]="pool"
+        [spike-call]="mbias"
         [call]="mbias"
-        [spike-call]="call"
-        [saturation]="spike-call"
-        [summary]="saturation"
+        [saturation]="call"
+        [summary]="spike-call saturation"
         [methscan]="summary"
     )
 

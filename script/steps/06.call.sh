@@ -240,10 +240,10 @@ pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default \
 
 echo "[dbitm] call finished successfully"
 if [[ "$use_scratch" == true ]]; then
-    rm -rf -- "$final_dir/coverage"
-    mkdir -p "$final_dir"
+    mkdir -p "$final_dir/coverage"
+    rm -rf -- "$final_dir/coverage/host"
     echo "[dbitm] copying coverage result from scratch to $final_dir/coverage"
-    cp -a "$run_output" "$final_dir/coverage"
+    cp -a "$run_output/." "$final_dir/coverage/"
 fi
 echo "[dbitm] call log: $final_dir/coverage/call.log"
 echo "[dbitm] call result: $final_dir/coverage"

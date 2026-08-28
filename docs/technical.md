@@ -25,24 +25,28 @@ authority.
 The complete execution graph is:
 
 ```text
-fastp -> barcode -> +-> align ------+
-                    |               |
-                    +-> spike-align +-> pool -> mbias -> call -> spike-call -> saturation -> summary -> methscan
+fastp -> barcode -> +-> spike-align -+
+                    |                 |
+                    +-> align --------+-> pool -> mbias -+-> spike-call ---------+
+                                                         |                       |
+                                                         +-> call -> saturation -+-> summary -> methscan
 ```
 
-`align` and `spike-align` can run concurrently. All later stages are ordered by
-data dependency.
+`spike-align` and `align` can run concurrently. After M-bias inference,
+`spike-call` and host `call` can also run concurrently. `saturation` waits for
+host calling, and `summary` waits for both `spike-call` and `saturation`. All
+stages are ordered by data dependency.
 
 | Stage | Shell entry point | Main purpose |
 |---|---|---|
 | `fastp` | `script/steps/01.fastp.sh` | Filter paired FASTQ reads |
 | `barcode` | `script/steps/02.barcode.sh` | Extract and correct spatial barcodes |
-| `align` | `script/steps/03.align.sh` | Align barcoded host reads and attach `CB` tags |
 | `spike-align` | `script/steps/03.spike_align.sh` | Align candidate spike-in reads |
+| `align` | `script/steps/03.align.sh` | Align barcoded host reads and attach `CB` tags |
 | `pool` | `script/steps/04.pool.sh` | Merge, coordinate-sort, and index BAM files |
 | `mbias` | `script/steps/05.mbias.sh` | Estimate cycle-specific methylation bias and trim cutoffs |
-| `call` | `script/steps/06.call.sh` | Call per-spot host CG, CA, CC, and CT methylation |
 | `spike-call` | `script/steps/06.spike_call.sh` | Call aggregate mitochondrial and spike-in methylation |
+| `call` | `script/steps/06.call.sh` | Call per-spot host CG, CA, CC, and CT methylation |
 | `saturation` | `script/steps/07.saturation.sh` | Estimate host CpG saturation across spots |
 | `summary` | `script/steps/08.summary.sh` | Produce QC tables and plots |
 | `methscan` | `script/steps/09.methscan.sh` | Detect context-specific VMRs and construct spot-by-VMR matrices |
