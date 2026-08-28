@@ -13,8 +13,7 @@ Arguments:
   step           Pipeline step: fastp | barcode | align | spike-align | pool | mbias | call | spike-call | saturation | summary | methscan | all
   --input PATH   Raw FASTQ directory path
   --config PATH  Optional config file (default: config/dbitm.config.sh)
-  --resume STEP
-                 With step=all, start at STEP and run/submit all later steps
+  --resume STEP  With step=all, start at STEP and run/submit all later steps
   --dry-run      Validate and print the execution plan without writing outputs
   -h, --help     Show this help message and exit
 

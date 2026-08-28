@@ -59,11 +59,11 @@ fi
 source "$config_file"
 
 # use configured per-thread sort memory, otherwise derive POOL_MEM / POOL_THREADS
-if [[ -n "${POOL_SORT_MEM:-}" ]]; then
+if [[ -n "${POOL_SORT_MEM}" ]]; then
     sort_mem=$POOL_SORT_MEM
 else
-    pool_mem_num=$(echo "${POOL_MEM:-64G}" | sed 's/[^0-9]//g')
-    sort_mem=$((pool_mem_num / ${POOL_THREADS:-4}))G
+    pool_mem_num=$(echo "${POOL_MEM}" | sed 's/[^0-9]//g')
+    sort_mem=$((pool_mem_num / ${POOL_THREADS}))G
 fi
 
 raw_abs=$(realpath "$raw_path")
