@@ -553,8 +553,12 @@ def write_ch_part(
     ]
     with part_path.open("w", encoding="utf-8") as handle:
         for spot_id, pos_map in sorted(spot_maps):
-            for pos in sorted(pos_map):
-                meth, unmeth, ctx, strand = pos_map[pos]
+            # Keep each spot/context contiguous so the downstream splitter
+            # opens each context output at most once per batch.
+            for pos, values in sorted(
+                pos_map.items(), key=lambda item: (item[1][2], item[0])
+            ):
+                meth, unmeth, ctx, strand = values
                 handle.write(
                     f"{spot_id}\t"
                     f"{format_ch_line(chrom, pos, meth, unmeth, ctx, strand)}"
