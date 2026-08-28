@@ -112,7 +112,7 @@ individually and omit `spike-align`.
 The command format is:
 
 ```text
-dbitm <assay> <step> --input <FASTQ_directory> [--config <config_file>] [--dry-run]
+dbitm <assay> <step> --input <FASTQ_directory> [--config <config_file>] [--resume <step>] [--dry-run]
 ```
 
 Supported assays:
@@ -135,6 +135,17 @@ dbitm cabernet all --input /path/to/sample/fastq
 
 With `RUN_MODE=local`, the steps run sequentially in the current process. With
 `RUN_MODE=hpc`, they are submitted to SLURM with the required dependencies.
+
+Resume at any step and run or submit that step plus all later steps with
+`step=all` and `--resume`. Outputs required by earlier steps must already be
+complete. For example:
+
+```bash
+dbitm taps all --resume mbias --input /path/to/sample/fastq
+```
+
+When resuming in HPC mode, dependencies are added between jobs submitted by the
+current command. Steps before the selected start point are treated as complete.
 
 Use `--dry-run` to validate configuration and print the execution plan without
 writing pipeline outputs. In HPC mode, this prints the `sbatch` commands and

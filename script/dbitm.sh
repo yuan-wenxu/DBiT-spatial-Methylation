@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
     local status=${1:-1}
     cat <<'EOF'
-Usage: dbitm.sh <assay> <step> --input <path> [--config <path>] [--dry-run]
+Usage: dbitm.sh <assay> <step> --input <path> [--config <path>] [--resume <step>] [--dry-run]
 
 Main control script for DBiT-spatial-Methylation pipeline.
 
@@ -13,6 +13,8 @@ Arguments:
   step           Pipeline step: fastp | barcode | align | spike-align | pool | mbias | call | spike-call | saturation | summary | methscan | all
   --input PATH   Raw FASTQ directory path
   --config PATH  Optional config file (default: config/dbitm.config.sh)
+  --resume STEP
+                 With step=all, start at STEP and run/submit all later steps
   --dry-run      Validate and print the execution plan without writing outputs
   -h, --help     Show this help message and exit
 
@@ -20,7 +22,7 @@ Execution mode is controlled by RUN_MODE in the config file:
   RUN_MODE=local   Run step directly
   RUN_MODE=hpc     Submit step via sbatch (default)
 
-The all step runs/submits:
+The all step runs/submits (or resumes from --resume):
   fastp -> barcode -> (align + spike-align) -> pool -> mbias -> call -> spike-call -> saturation -> summary -> methscan
 EOF
     exit "$status"
@@ -72,6 +74,7 @@ fi
 # ── parse optional arguments ──
 input=""
 config=""
+resume_step=""
 dry_run=false
 
 while [[ $# -gt 0 ]]; do
@@ -82,6 +85,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --config)
             config=$2
+            shift 2
+            ;;
+        --resume)
+            if [[ $# -lt 2 ]]; then
+                echo "[dbitm] error: --resume requires a step name" >&2
+                usage
+            fi
+            resume_step=$2
             shift 2
             ;;
         --dry-run)
@@ -97,6 +108,27 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+PIPELINE_STEPS=("${ALL_STEPS[@]}")
+if [[ -n "$resume_step" ]]; then
+    if [[ "$step" != all ]]; then
+        echo "[dbitm] error: --resume can only be used with step=all" >&2
+        exit 1
+    fi
+    resume_step_index=-1
+    for i in "${!ALL_STEPS[@]}"; do
+        if [[ "${ALL_STEPS[$i]}" == "$resume_step" ]]; then
+            resume_step_index=$i
+            break
+        fi
+    done
+    if (( resume_step_index < 0 )); then
+        echo "[dbitm] error: unsupported --resume value: $resume_step" >&2
+        echo "[dbitm] available start steps: ${ALL_STEPS[*]}" >&2
+        exit 1
+    fi
+    PIPELINE_STEPS=("${ALL_STEPS[@]:resume_step_index}")
+fi
 
 if [[ -z "$input" ]]; then
     echo "[dbitm] error: --input is required" >&2
@@ -131,6 +163,10 @@ export DBITM_CONFIG=$config
 echo "[dbitm] assay: $assay | step: $step | input: $input"
 echo "[dbitm] config: $config"
 echo "[dbitm] dry-run: $dry_run"
+if [[ -n "$resume_step" ]]; then
+    echo "[dbitm] resume from: $resume_step"
+    echo "[dbitm] selected steps: ${PIPELINE_STEPS[*]}"
+fi
 
 source "$config"
 
@@ -242,67 +278,64 @@ submit_step() {
     echo "[dbitm] submitted $step_name job-id=$job_id"
 }
 
-run_all_local() {
+run_pipeline_local() {
     local step_name
-    echo "[dbitm] running complete pipeline locally..."
-    for step_name in "${ALL_STEPS[@]}"; do
+    echo "[dbitm] running selected pipeline locally: ${PIPELINE_STEPS[*]}"
+    for step_name in "${PIPELINE_STEPS[@]}"; do
         run_step_local "$step_name"
     done
     if [[ "$dry_run" == true ]]; then
-        echo "[dbitm] complete local dry-run finished successfully"
+        echo "[dbitm] selected local dry-run finished successfully"
     else
-        echo "[dbitm] complete pipeline finished successfully"
+        echo "[dbitm] selected pipeline finished successfully"
     fi
 }
 
-submit_all_hpc() {
-    local fastp_job_id barcode_job_id align_job_id spike_align_job_id
-    local pool_job_id mbias_job_id call_job_id spike_call_job_id saturation_job_id summary_job_id methscan_job_id step_name
+submit_pipeline_hpc() {
+    local step_name prerequisite dependency
+    local -a dependency_ids job_summary
+    local -A submitted_job_ids=()
+    local -A prerequisites=(
+        [fastp]=""
+        [barcode]="fastp"
+        [align]="barcode"
+        [spike-align]="barcode"
+        [pool]="align spike-align"
+        [mbias]="pool"
+        [call]="mbias"
+        [spike-call]="call"
+        [saturation]="spike-call"
+        [summary]="saturation"
+        [methscan]="summary"
+    )
 
-    echo "[dbitm] submitting complete pipeline with Slurm dependencies..."
-    for step_name in "${ALL_STEPS[@]}"; do
+    echo "[dbitm] submitting selected pipeline with Slurm dependencies: ${PIPELINE_STEPS[*]}"
+    for step_name in "${PIPELINE_STEPS[@]}"; do
         validate_hpc_resources "$step_name"
     done
 
-    submit_step fastp
-    fastp_job_id=$SUBMITTED_JOB_ID
-
-    submit_step barcode "$fastp_job_id"
-    barcode_job_id=$SUBMITTED_JOB_ID
-
-    submit_step align "$barcode_job_id"
-    align_job_id=$SUBMITTED_JOB_ID
-
-    submit_step spike-align "$barcode_job_id"
-    spike_align_job_id=$SUBMITTED_JOB_ID
-
-    submit_step pool "$align_job_id:$spike_align_job_id"
-    pool_job_id=$SUBMITTED_JOB_ID
-
-    submit_step mbias "$pool_job_id"
-    mbias_job_id=$SUBMITTED_JOB_ID
-
-    submit_step call "$mbias_job_id"
-    call_job_id=$SUBMITTED_JOB_ID
-
-    submit_step spike-call "$call_job_id"
-    spike_call_job_id=$SUBMITTED_JOB_ID
-
-    submit_step saturation "$spike_call_job_id"
-    saturation_job_id=$SUBMITTED_JOB_ID
-
-    submit_step summary "$saturation_job_id"
-    summary_job_id=$SUBMITTED_JOB_ID
-
-    submit_step methscan "$summary_job_id"
-    methscan_job_id=$SUBMITTED_JOB_ID
+    for step_name in "${PIPELINE_STEPS[@]}"; do
+        dependency_ids=()
+        for prerequisite in ${prerequisites[$step_name]}; do
+            if [[ -n "${submitted_job_ids[$prerequisite]:-}" ]]; then
+                dependency_ids+=("${submitted_job_ids[$prerequisite]}")
+            fi
+        done
+        dependency=""
+        if (( ${#dependency_ids[@]} > 0 )); then
+            dependency=$(IFS=:; echo "${dependency_ids[*]}")
+        fi
+        submit_step "$step_name" "$dependency"
+        submitted_job_ids[$step_name]=$SUBMITTED_JOB_ID
+        job_summary+=("$step_name=$SUBMITTED_JOB_ID")
+    done
 
     if [[ "$dry_run" == true ]]; then
-        echo "[dbitm] complete HPC submission dry-run finished successfully"
+        echo "[dbitm] selected HPC submission dry-run finished successfully"
     else
-        echo "[dbitm] complete pipeline submitted successfully"
+        echo "[dbitm] selected pipeline submitted successfully"
     fi
-    echo "[dbitm] job IDs: fastp=$fastp_job_id barcode=$barcode_job_id align=$align_job_id spike-align=$spike_align_job_id pool=$pool_job_id mbias=$mbias_job_id call=$call_job_id spike-call=$spike_call_job_id saturation=$saturation_job_id summary=$summary_job_id methscan=$methscan_job_id"
+    echo "[dbitm] job IDs: ${job_summary[*]}"
 }
 
 if [[ "$RUN_MODE" == hpc ]]; then
@@ -311,13 +344,13 @@ if [[ "$RUN_MODE" == hpc ]]; then
         exit 1
     fi
     if [[ "$step" == all ]]; then
-        submit_all_hpc
+        submit_pipeline_hpc
     else
         submit_step "$step"
     fi
 else
     if [[ "$step" == all ]]; then
-        run_all_local
+        run_pipeline_local
     else
         run_step_local "$step"
     fi
