@@ -138,37 +138,39 @@ def count_ch_column(
     counts,
 ) -> None:
     pos = pileup_col.pos
+    family_flags = SHARED.TOP_FLAGS if strand == "+" else SHARED.BOT_FLAGS
     for pileup_read in pileup_col.pileups:
         record = pileup_read.alignment
-        if record.flag not in SHARED.PAIRED_FLAGS:
+        if record.flag not in family_flags:
             continue
         if pileup_read.is_del or pileup_read.is_refskip:
             continue
         query_pos = pileup_read.query_position
         if query_pos is None:
             continue
-        forward_sequence = record.get_forward_sequence()
-        if not forward_sequence:
-            continue
-        read_length = len(forward_sequence)
-        forward_index = SHARED.get_forward_index(record, query_pos, read_length)
-        if forward_index < 0 or forward_index >= read_length:
+        sequence = record.query_sequence
+        if not sequence or query_pos >= len(sequence):
             continue
         if SHARED.is_trimmed(
             record,
             query_pos,
-            read_length,
+            len(sequence),
             args.r1_left_trim,
             args.r1_right_trim,
             args.r2_left_trim,
             args.r2_right_trim,
         ):
             continue
-        base = forward_sequence[forward_index].upper()
+        base = sequence[query_pos].upper()
         if strand == "+":
-            if forward_index + 1 >= read_length:
+            if query_pos + 1 >= len(sequence):
                 continue
-            if forward_sequence[forward_index + 1].upper() != context[1]:
+            if sequence[query_pos + 1].upper() != context[1]:
+                continue
+        else:
+            if query_pos == 0:
+                continue
+            if sequence[query_pos - 1].upper() != SHARED.CH_REVERSE_NEIGHBOR[context]:
                 continue
         observation = SHARED.classify_ch_observation(base, strand, args.assay)
         if observation is None:

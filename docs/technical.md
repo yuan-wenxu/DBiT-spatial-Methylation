@@ -271,7 +271,13 @@ accepted for methylation classification. For an observed `CG`, flags `99` and
 bottom/minus family. CpG output does not retain that family label because both
 families update the same forward-C counter.
 
-For non-CpG CH contexts (`CA`, `CC`, and `CT` in the reference):
+For non-CpG CH contexts (`CA`, `CC`, and `CT` in the reference), evidence comes
+only from the read family whose original strand carries the site cytosine:
+top-family reads for plus-strand sites, bottom-family reads for minus-strand
+sites. Opposite-family reads observe the unconvertible complement base G at
+the site and carry no methylation information. Observations also require the
+read to match the reference context at the neighboring base: the base after a
+plus-strand site or before a minus-strand site.
 
 - plus-strand evidence uses observed C or T
 - minus-strand evidence uses observed G or A

@@ -26,6 +26,7 @@ PAIRED_FLAGS: Set[int] = TOP_FLAGS | BOT_FLAGS
 # forward-strand CH contexts and their reverse-complement mapping
 CH_FORWARD_CONTEXTS: Set[str] = {"CA", "CC", "CT"}
 CH_REVERSE_MAP: Dict[str, str] = {"T": "CA", "G": "CC", "A": "CT"}
+CH_REVERSE_NEIGHBOR: Dict[str, str] = {"CA": "T", "CC": "G", "CT": "A"}
 
 # Set in the parent immediately before forking interval workers. The immutable
 # chromosome string is then shared copy-on-write instead of being serialized
@@ -407,13 +408,6 @@ def count_cg_column(
         spot[value_index] = int(spot[value_index]) + 1
 
 
-def get_forward_index(record: pysam.AlignedSegment, query_pos: int,
-                      read_len: int) -> int:
-    if record.is_reverse:
-        return read_len - query_pos - 1
-    return query_pos
-
-
 def classify_ch_observation(
     base: str,
     strand: str,
@@ -444,31 +438,33 @@ def count_ch_column(
     r2_left: int, r2_right: int,
 ) -> None:
     pos = pileup_col.pos
+    family_flags = TOP_FLAGS if strand == "+" else BOT_FLAGS
     for pileup_read in pileup_col.pileups:
         record = pileup_read.alignment
-        if record.flag not in PAIRED_FLAGS:
+        if record.flag not in family_flags:
             continue
         if pileup_read.is_del or pileup_read.is_refskip:
             continue
         qpos = pileup_read.query_position
         if qpos is None:
             continue
-        fwd_seq = record.get_forward_sequence()
-        if not fwd_seq:
+        seq = record.query_sequence
+        if not seq or qpos >= len(seq):
             continue
-        read_len = len(fwd_seq)
-        fwd_idx = get_forward_index(record, qpos, read_len)
-        if fwd_idx < 0 or fwd_idx >= read_len:
-            continue
-        if is_trimmed(record, qpos, read_len,
-                       r1_left, r1_right, r2_left, r2_right):
+        if is_trimmed(record, qpos, len(seq),
+                      r1_left, r1_right, r2_left, r2_right):
             continue
 
-        base = fwd_seq[fwd_idx].upper()
+        base = seq[qpos].upper()
         if strand == "+":
-            if fwd_idx + 1 >= read_len:
+            if qpos + 1 >= len(seq):
                 continue
-            if fwd_seq[fwd_idx + 1].upper() != ctx[1]:
+            if seq[qpos + 1].upper() != ctx[1]:
+                continue
+        else:
+            if qpos == 0:
+                continue
+            if seq[qpos - 1].upper() != CH_REVERSE_NEIGHBOR[ctx]:
                 continue
         observation = classify_ch_observation(base, strand, assay)
         if observation is None:
