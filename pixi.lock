@@ -132,7 +132,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/setuptools-81.0.0-pyh332efcf_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/six-1.17.0-pyhe01879c_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tzdata-2025c-hc9c84f9_1.conda
-      - pypi: git+https://github.com/yuan-wenxu/MethSCAn.git?tag=v2.0.0#ede300cd99497b8dcecbe3187dc9ee04e8c0b2b7
+      - pypi: git+https://github.com/yuan-wenxu/MethSCAn.git?tag=v2.0.1#84bcab01b9f2ad5651d26adfc0a6742586d71b20
       - pypi: https://files.pythonhosted.org/packages/4a/a8/0b2ced25639fb20cc1c9784de90a8c25f9504a7f18cd8b5397bd61696d7d/click-8.0.4-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/8c/99/33a6ed9c1a0b5e42efa98eb0edf617d61dca576c82625947377b1d4540c9/numba-0.66.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/99/f8/8768f803151714640cb6f06fd9de490ce7db632d351da05f42f77330d2fd/click_help_colors-0.9.4-py3-none-any.whl
@@ -1688,9 +1688,9 @@ packages:
   purls: []
   size: 119135
   timestamp: 1767016325805
-- pypi: git+https://github.com/yuan-wenxu/MethSCAn.git?tag=v2.0.0#ede300cd99497b8dcecbe3187dc9ee04e8c0b2b7
+- pypi: git+https://github.com/yuan-wenxu/MethSCAn.git?tag=v2.0.1#84bcab01b9f2ad5651d26adfc0a6742586d71b20
   name: methscan
-  version: 2.0.0
+  version: 2.0.1
   requires_dist:
   - click>=7.1.2,<8.1
   - click-help-colors>=0.9,<1

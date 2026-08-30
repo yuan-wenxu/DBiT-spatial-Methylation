@@ -26,4 +26,4 @@ llvmlite = "*"
 statsmodels = ">=0.14.6,<0.15"
 
 [pypi-dependencies]
-methscan = { git = "https://github.com/yuan-wenxu/MethSCAn.git", tag = "v2.0.0" }
+methscan = { git = "https://github.com/yuan-wenxu/MethSCAn.git", tag = "v2.0.1" }
