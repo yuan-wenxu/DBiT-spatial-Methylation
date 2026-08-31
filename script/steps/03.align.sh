@@ -169,8 +169,16 @@ if [[ -n ${SCRATCH_ROOT:-} ]]; then
     use_scratch=true
     enable_cleanup
     mkdir -p "$run_input"
-    echo "[dbitm] copying barcode FASTQ files to scratch: $run_input"
-    cp -a "$barcode_dir/." "$run_input"/
+    shopt -s nullglob
+    scratch_fastq_files=(
+        "$barcode_dir"/*.R1.demux.fastq.gz
+        "$barcode_dir"/*.R2.demux.fastq.gz
+    )
+    shopt -u nullglob
+    echo "[dbitm] copying ${#scratch_fastq_files[@]} demux FASTQ files to scratch: $run_input"
+    if (( ${#scratch_fastq_files[@]} > 0 )); then
+        cp -a "${scratch_fastq_files[@]}" "$run_input"/
+    fi
 else
     mkdir -p "$final_dir"
 fi

@@ -113,7 +113,7 @@ if [[ "$dry_run" == true ]]; then
     fi
     for methscan_context in "${methscan_contexts[@]}"; do
         context_output=$output_dir/$methscan_context
-        echo "[dbitm] planned command: methscan prepare $coverage_dir/**/*.${methscan_context}.cov -> $context_output/compact"
+        echo "[dbitm] planned command: methscan prepare $coverage_dir/host.${methscan_context}.cov --barcode-column 7 -> $context_output/compact"
         echo "[dbitm] planned command: methscan filter $context_output/compact -> $context_output/filter"
         echo "[dbitm] planned command: methscan smooth $context_output/filter"
         echo "[dbitm] planned command: methscan scan $context_output/filter -> $context_output/VMRs.bed"
@@ -131,8 +131,9 @@ if [[ ! -d "$coverage_dir" ]]; then
     exit 1
 fi
 for methscan_context in "${methscan_contexts[@]}"; do
-    if ! find "$coverage_dir" -type f -name "*.${methscan_context}.cov" -print -quit | grep -q .; then
-        echo "[dbitm] methscan: no host *.${methscan_context}.cov files found under $coverage_dir" >&2
+    context_cov_file=$coverage_dir/host.${methscan_context}.cov
+    if [[ ! -f "$context_cov_file" ]]; then
+        echo "[dbitm] methscan: combined host coverage file not found: $context_cov_file" >&2
         exit 1
     fi
 done
@@ -161,20 +162,19 @@ for methscan_context in "${methscan_contexts[@]}"; do
     matrix_dir=$context_run_output/matrix
     methscan_log=$context_run_output/methscan.log
     methscan_min_sites=${methscan_min_sites_by_context[$methscan_context]}
-    mapfile -d '' -t context_cov_files < <(
-        find "$coverage_dir" -type f -name "*.${methscan_context}.cov" -print0 | sort -z
-    )
+    context_cov_file=$coverage_dir/host.${methscan_context}.cov
     mkdir -p "$context_run_output"
     {
         echo "[dbitm] MethSCAn context: $methscan_context"
-        echo "[dbitm] MethSCAn inputs: ${#context_cov_files[@]}"
+        echo "[dbitm] MethSCAn input: $context_cov_file"
         echo "[dbitm] MethSCAn min sites: $methscan_min_sites"
         echo "[dbitm] MethSCAn run directory: $context_run_output"
     } | tee "$methscan_log"
 
     pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default \
-        methscan prepare "${context_cov_files[@]}" "$compact_dir" \
+        methscan prepare "$context_cov_file" "$compact_dir" \
         --input-format bismark \
+        --barcode-column 7 \
         --chunksize "$methscan_chunksize" \
         2>&1 | tee -a "$methscan_log"
     pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default \

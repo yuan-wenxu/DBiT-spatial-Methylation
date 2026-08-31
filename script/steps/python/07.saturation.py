@@ -118,20 +118,28 @@ def count_spot_reads(
     return dict(counts)
 
 
-def parse_cov_histogram(path: Path) -> dict[int, int]:
-    histogram: dict[int, int] = {}
+def parse_barcoded_cov_histograms(
+    path: Path, selected_spots: set[str]
+) -> dict[str, dict[int, int]]:
+    histograms: dict[str, dict[int, int]] = {}
+    if not path.is_file():
+        return histograms
     with path.open(encoding="utf-8") as handle:
         for raw_line in handle:
             fields = raw_line.rstrip("\n").split("\t")
-            if len(fields) < 6:
+            if len(fields) < 7:
+                continue
+            spot = fields[6]
+            if spot not in selected_spots:
                 continue
             try:
                 depth = int(fields[4]) + int(fields[5])
             except ValueError:
                 continue
             if depth > 0:
+                histogram = histograms.setdefault(spot, {})
                 histogram[depth] = histogram.get(depth, 0) + 1
-    return histogram
+    return histograms
 
 
 def expected_unique(histogram: dict[int, int], fraction: float) -> float:
@@ -366,7 +374,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         work_dir = Path(args.work_dir)
         manifest_path = work_dir / "coverage" / "spot_manifest.tsv"
         bam_path = work_dir / "pooled" / "pooled.cb.bam"
-        coverage_paths = sorted((work_dir / "coverage" / "host").rglob("*.CG.cov"))
+        coverage_path = work_dir / "coverage" / "host" / "host.CG.cov"
         fastp_path = Path(args.fastp_json) if args.fastp_json else work_dir / "fastp" / "fastp.json"
         output_dir = Path(args.output_dir) if args.output_dir else work_dir / "saturation"
         summary_path = output_dir / "saturation_summary.tsv"
@@ -375,7 +383,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"[saturation] work-dir={work_dir}")
         print(f"[saturation] host-bam={bam_path}")
         print(f"[saturation] spot-manifest={manifest_path}")
-        print(f"[saturation] host-cg-cov-count={len(coverage_paths)}")
+        print(f"[saturation] host-cg-cov={coverage_path}")
         print(f"[saturation] reads-threshold={args.reads_threshold}")
         print(f"[saturation] pred-fraction={args.pred_fraction}")
         print(f"[saturation] linear-r2-threshold={args.linear_r2_threshold}")
@@ -387,14 +395,15 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         cb_to_spot = load_cb_to_spot(manifest_path)
         spot_reads = count_spot_reads(bam_path, args.cb_tag, cb_to_spot)
-        spot_coverage = {
-            path.name.removesuffix(".CG.cov"): path for path in coverage_paths
-        }
-        hq_spots = sorted(
+        hq_candidates = {
             spot
             for spot, reads in spot_reads.items()
-            if reads > args.reads_threshold and spot in spot_coverage
+            if reads > args.reads_threshold
+        }
+        spot_histograms = parse_barcoded_cov_histograms(
+            coverage_path, hq_candidates
         )
+        hq_spots = sorted(hq_candidates & spot_histograms.keys())
         sequencing_gbp = load_sequencing_gbp(fastp_path)
         if sequencing_gbp is None:
             print("[saturation] warning=fastp_depth_unavailable")
@@ -409,7 +418,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         fraction_values = {fraction: [] for fraction in DEFAULT_FRACTIONS}
         usable_spots: list[str] = []
         for spot in hq_spots:
-            histogram = parse_cov_histogram(spot_coverage[spot])
+            histogram = spot_histograms[spot]
             if not histogram:
                 continue
             usable_spots.append(spot)

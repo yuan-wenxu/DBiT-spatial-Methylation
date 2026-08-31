@@ -199,8 +199,16 @@ if [[ -n ${SCRATCH_ROOT:-} ]]; then
     use_scratch=true
     enable_cleanup
     mkdir -p "$run_input"
-    echo "[dbitm] copying spike-in FASTQ files to scratch: $run_input"
-    cp -a "$barcode_dir/." "$run_input"/
+    shopt -s nullglob
+    scratch_fastq_files=(
+        "$barcode_dir"/*.R1.spike-in.fastq.gz
+        "$barcode_dir"/*.R2.spike-in.fastq.gz
+    )
+    shopt -u nullglob
+    echo "[dbitm] copying ${#scratch_fastq_files[@]} spike-in FASTQ files to scratch: $run_input"
+    if (( ${#scratch_fastq_files[@]} > 0 )); then
+        cp -a "${scratch_fastq_files[@]}" "$run_input"/
+    fi
 else
     mkdir -p "$final_dir"
 fi

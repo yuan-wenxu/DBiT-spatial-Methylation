@@ -138,6 +138,33 @@ def parse_cov_stats(path: Path) -> Optional[tuple[float, int]]:
     return methylation_sum / site_count, site_count
 
 
+def parse_barcoded_cov_stats(path: Path) -> dict[str, tuple[float, int]]:
+    if not path.is_file():
+        return {}
+    methylation_sums: dict[str, float] = defaultdict(float)
+    site_counts: dict[str, int] = defaultdict(int)
+    with path.open(encoding="utf-8") as handle:
+        for raw_line in handle:
+            fields = raw_line.rstrip("\n").split("\t")
+            if len(fields) < 7:
+                continue
+            spot = fields[6]
+            try:
+                methylation = float(fields[3])
+                methylated = int(fields[4])
+                unmethylated = int(fields[5])
+            except ValueError:
+                continue
+            if not spot or methylated + unmethylated <= 0:
+                continue
+            methylation_sums[spot] += methylation
+            site_counts[spot] += 1
+    return {
+        spot: (methylation_sums[spot] / site_count, site_count)
+        for spot, site_count in site_counts.items()
+    }
+
+
 def read_saturation_rate(path: Path) -> Optional[str]:
     if not path.is_file():
         return None
@@ -263,18 +290,14 @@ def parse_barcoded_reads(path: Path) -> Optional[int]:
 
 
 def summarize_spots(
-    context_cov_paths: dict[str, list[Path]],
+    context_cov_paths: dict[str, Path],
     spot_counts: dict[str, int],
     coordinates: dict[str, tuple[str, str]],
 ) -> list[dict[str, str]]:
     context_stats: dict[str, dict[str, Optional[tuple[float, int]]]] = {}
     observed_spots = set(coordinates) | set(spot_counts)
-    for context, cov_paths in context_cov_paths.items():
-        suffix = str(CONTEXT_SPECS[context]["suffix"])
-        cov_stats: dict[str, Optional[tuple[float, int]]] = {}
-        for path in cov_paths:
-            spot = path.name.removesuffix(f".{suffix}.cov")
-            cov_stats[spot] = parse_cov_stats(path)
+    for context, cov_path in context_cov_paths.items():
+        cov_stats = parse_barcoded_cov_stats(cov_path)
         context_stats[context] = cov_stats
         observed_spots.update(cov_stats)
 
@@ -457,10 +480,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     else:
         contexts = ["cg", *CH_CONTEXTS]
     host_cov_paths = {
-        context: sorted(
-            (coverage_dir / "host").rglob(
-                f"*.{CONTEXT_SPECS[context]['suffix']}.cov"
-            )
+        context: (
+            coverage_dir
+            / "host"
+            / f"host.{CONTEXT_SPECS[context]['suffix']}.cov"
         )
         for context in contexts
     }
@@ -481,7 +504,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(f"[summary] work-dir={work_dir}")
     print(f"[summary] context-mode={args.context_mode}")
     for context in contexts:
-        print(f"[summary] host-{context}-cov-count={len(host_cov_paths[context])}")
+        print(f"[summary] host-{context}-cov={host_cov_paths[context]}")
     print(f"[summary] spike-names={','.join(spike_names) if spike_names else 'none'}")
     print(f"[summary] saturation-summary={saturation_summary}")
     print(f"[summary] output-dir={output_dir}")

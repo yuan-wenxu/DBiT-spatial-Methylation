@@ -14,7 +14,7 @@ import tempfile
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, List, Optional, Set, TextIO, Tuple
+from typing import BinaryIO, Dict, List, Optional, Set, Tuple
 
 import pysam
 
@@ -59,7 +59,10 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "-o", "--out-dir",
         required=True,
-        help="Output directory for per-spot .CG.cov / .CA.cov / .CC.cov / .CT.cov files.",
+        help=(
+            "Output directory for combined host.CG.cov / host.CA.cov / "
+            "host.CC.cov / host.CT.cov files."
+        ),
     )
     parser.add_argument(
         "--barcode-whitelist",
@@ -494,13 +497,19 @@ def format_cg_line(
     return "\t".join(fields) + "\n"
 
 
-def format_ch_line(chrom: str, pos: int, meth: int, unmeth: int,
-                   ctx: str, strand: str) -> str:
+def format_ch_line(
+    chrom: str,
+    pos: int,
+    meth: int,
+    unmeth: int,
+    spot_id: str,
+    strand: str,
+) -> str:
     total = meth + unmeth
     pct = round((meth / total) * 100, 2) if total > 0 else 0.0
     return (
         f"{chrom}\t{pos}\t{pos}\t{pct:.2f}\t{meth}\t{unmeth}\t"
-        f"{ctx}\t{strand}\n"
+        f"{spot_id}\t{strand}\n"
     )
 
 
@@ -524,19 +533,19 @@ def write_cg_part(
                 meth, unmeth = pos_map[pos]
                 meth_count = int(meth)
                 unmeth_count = int(unmeth)
-                cg_line = format_cg_line(chrom, pos, meth_count, unmeth_count)
-                handle.write(
-                    f"{spot_id}\t{cg_line}"
-                )
+                cg_line = format_cg_line(
+                    chrom, pos, meth_count, unmeth_count
+                ).rstrip("\n")
+                handle.write(f"{cg_line}\t{spot_id}\n")
                 processed += 1
                 covered += int(meth_count + unmeth_count > 0)
     return processed, covered
 
 
-def write_ch_part(
+def write_ch_parts(
     ch_counts: ChCounts,
     chrom: str,
-    part_path: Path,
+    part_paths: Dict[str, Path],
     barcode_map: BarcodeMap,
     barcode_length: int,
 ) -> Tuple[int, int]:
@@ -547,24 +556,30 @@ def write_ch_part(
         for cb, pos_map in ch_counts.items()
         if pos_map
     ]
-    with part_path.open("w", encoding="utf-8") as handle:
+    handles = {
+        context: path.open("w", encoding="utf-8")
+        for context, path in part_paths.items()
+    }
+    try:
         for spot_id, pos_map in sorted(spot_maps):
-            # Keep each spot/context contiguous so the downstream splitter
-            # opens each context output at most once per batch.
             for pos, values in sorted(
                 pos_map.items(), key=lambda item: (item[1][2], item[0])
             ):
                 meth, unmeth, ctx, strand = values
-                handle.write(
-                    f"{spot_id}\t"
-                    f"{format_ch_line(chrom, pos, meth, unmeth, ctx, strand)}"
+                handles[ctx].write(
+                    format_ch_line(
+                        chrom, pos, meth, unmeth, spot_id, strand
+                    )
                 )
                 processed += 1
                 covered += int(meth + unmeth > 0)
+    finally:
+        for handle in handles.values():
+            handle.close()
     return processed, covered
 
 
-BatchResult = Tuple[int, str, str, int, int, int, int]
+BatchResult = Tuple[int, Dict[str, str], int, int, int, int]
 
 
 def process_interval(
@@ -622,18 +637,28 @@ def process_interval(
                 )
 
     part_root = Path(part_dir)
-    cg_part = part_root / f"batch_{batch_index:06d}.CG.part"
-    ch_part = part_root / f"batch_{batch_index:06d}.CH.part"
-    cpg_processed, cpg_covered = write_cg_part(
-        cg_counts, chrom, cg_part, barcode_map, barcode_length
-    )
-    ch_processed, ch_covered = write_ch_part(
-        ch_counts, chrom, ch_part, barcode_map, barcode_length
-    )
+    part_paths: Dict[str, Path] = {}
+    cpg_processed = 0
+    cpg_covered = 0
+    ch_processed = 0
+    ch_covered = 0
+    if context_mode in ("cg", "both"):
+        part_paths["CG"] = part_root / f"batch_{batch_index:06d}.CG.part"
+        cpg_processed, cpg_covered = write_cg_part(
+            cg_counts, chrom, part_paths["CG"], barcode_map, barcode_length
+        )
+    if context_mode in ("ch", "both"):
+        ch_part_paths = {
+            context: part_root / f"batch_{batch_index:06d}.{context}.part"
+            for context in sorted(CH_FORWARD_CONTEXTS)
+        }
+        part_paths.update(ch_part_paths)
+        ch_processed, ch_covered = write_ch_parts(
+            ch_counts, chrom, ch_part_paths, barcode_map, barcode_length
+        )
     return (
         batch_index,
-        str(cg_part),
-        str(ch_part),
+        {context: str(path) for context, path in part_paths.items()},
         cpg_processed,
         cpg_covered,
         ch_processed,
@@ -641,51 +666,28 @@ def process_interval(
     )
 
 
-def append_part_to_outputs(
+def append_part_to_output(
     part_path: Path,
-    context: Optional[str],
+    context: str,
     out_dir: Path,
     output_paths: Dict[Path, Path],
+    output_handles: Dict[Path, BinaryIO],
     temp_suffix: str,
 ) -> None:
-    active_output: Optional[Tuple[str, str]] = None
-    output_handle: Optional[TextIO] = None
-    try:
-        with part_path.open(encoding="utf-8") as part_handle:
-            for raw_line in part_handle:
-                spot_id, payload = raw_line.split("\t", 1)
-                output_context = context
-                if output_context is None:
-                    fields = payload.rstrip("\n").split("\t")
-                    if len(fields) < 7 or fields[6] not in CH_FORWARD_CONTEXTS:
-                        raise ValueError(
-                            f"invalid CH context in caller part: {part_path}"
-                        )
-                    output_context = fields[6]
-                output_key = (spot_id, output_context)
-                if output_key != active_output:
-                    if output_handle is not None:
-                        output_handle.close()
-                    prefix = spot_id.split("_", 1)[0]
-                    final_path = (
-                        out_dir / "host" / prefix / f"{spot_id}.{output_context}.cov"
-                    )
-                    final_path.parent.mkdir(parents=True, exist_ok=True)
-                    if final_path in output_paths:
-                        temp_path = output_paths[final_path]
-                        mode = "a"
-                    else:
-                        temp_path = final_path.with_name(
-                            final_path.name + temp_suffix
-                        )
-                        output_paths[final_path] = temp_path
-                        mode = "w"
-                    output_handle = temp_path.open(mode, encoding="utf-8")
-                    active_output = output_key
-                output_handle.write(payload)
-    finally:
-        if output_handle is not None:
-            output_handle.close()
+    if part_path.stat().st_size == 0:
+        return
+    final_path = out_dir / "host" / f"host.{context}.cov"
+    if final_path not in output_handles:
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = final_path.with_name(final_path.name + temp_suffix)
+        output_paths[final_path] = temp_path
+        output_handles[final_path] = temp_path.open("wb")
+    with part_path.open("rb") as part_handle:
+        shutil.copyfileobj(
+            part_handle,
+            output_handles[final_path],
+            length=16 * 1024 * 1024,
+        )
 
 
 def process_chromosome(
@@ -696,6 +698,7 @@ def process_chromosome(
     barcode_map: BarcodeMap,
     barcode_length: int,
     output_paths: Dict[Path, Path],
+    output_handles: Dict[Path, BinaryIO],
     temp_suffix: str,
 ) -> Tuple[int, int, int, int]:
     global WORKER_CHROMOSOME_SEQUENCE
@@ -780,16 +783,14 @@ def process_chromosome(
 
     totals = [0, 0, 0, 0]
     for result in sorted(results):
-        _, cg_part, ch_part, cp, cc, hp, hc = result
-        if args.context_mode in ("cg", "both"):
-            append_part_to_outputs(
-                Path(cg_part), "CG", Path(args.out_dir),
-                output_paths, temp_suffix,
-            )
-        if args.context_mode in ("ch", "both"):
-            append_part_to_outputs(
-                Path(ch_part), None, Path(args.out_dir),
-                output_paths, temp_suffix,
+        _, part_paths, cp, cc, hp, hc = result
+        for context in ("CG", *sorted(CH_FORWARD_CONTEXTS)):
+            part_path = part_paths.get(context)
+            if part_path is None:
+                continue
+            append_part_to_output(
+                Path(part_path), context, Path(args.out_dir),
+                output_paths, output_handles, temp_suffix,
             )
         totals[0] += cp
         totals[1] += cc
@@ -873,6 +874,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     total_ch_cov = 0
 
     output_paths: Dict[Path, Path] = {}
+    output_handles: Dict[Path, BinaryIO] = {}
     try:
         with tempfile.TemporaryDirectory(
             prefix=".methylation-call-parts.", dir=out_dir
@@ -886,6 +888,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     barcode_map,
                     barcode_length,
                     output_paths,
+                    output_handles,
                     temp_suffix,
                 )
                 total_cpg_proc += cp
@@ -897,10 +900,15 @@ def main(argv: Optional[List[str]] = None) -> int:
                     f"cpg-processed={cp} cpg-covered={cc} "
                     f"ch-processed={hp} ch-covered={hc}"
                 )
+        for output_handle in output_handles.values():
+            output_handle.close()
+        output_handles.clear()
         for final_path, temp_path in output_paths.items():
             os.replace(temp_path, final_path)
         os.replace(manifest_temp, manifest_path)
     except Exception as exc:
+        for output_handle in output_handles.values():
+            output_handle.close()
         for temp_path in output_paths.values():
             try:
                 temp_path.unlink()
