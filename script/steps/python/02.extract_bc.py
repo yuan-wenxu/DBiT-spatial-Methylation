@@ -252,7 +252,7 @@ def match_whitelist(
     for candidate in whitelist:
         if len(candidate) != len(observed):
             continue
-        distance = hamming_distance(observed, candidate, stop_at=best_distance - 1)
+        distance = hamming_distance(observed, candidate, stop_at=best_distance)
         if distance < best_distance:
             best = candidate
             best_distance = distance
