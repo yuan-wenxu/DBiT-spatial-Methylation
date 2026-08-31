@@ -72,6 +72,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         description="Generate per-spot/sample summary TSVs and spatial heatmaps."
     )
     parser.add_argument("--work-dir", required=True, help="Path to the dbitm directory.")
+    parser.add_argument(
+        "--assay",
+        choices=("taps", "taps-v2", "emseq", "cabernet"),
+        help="Assay type used to interpret spatial barcodes. Default: taps.",
+    )
     parser.add_argument("--output-dir")
     parser.add_argument("--cb-tag", default="CB")
     parser.add_argument("--min-mapping-quality", type=int, default=10)
@@ -178,6 +183,7 @@ def read_saturation_rate(path: Path) -> Optional[str]:
 
 def load_spot_manifest(
     path: Path,
+    c_to_t: bool = False,
 ) -> tuple[dict[str, tuple[str, str]], dict[str, str]]:
     if not path.is_file():
         raise FileNotFoundError(f"spot manifest not found: {path}")
@@ -198,8 +204,9 @@ def load_spot_manifest(
             if x_value is None or y_value is None:
                 continue
             coordinates[spot] = (str(x_value), str(y_value))
-            cb_to_spot[raw_cb] = spot
-            cb_to_spot[raw_cb.replace("+", "")] = spot
+            lookup_cb = raw_cb.replace("C", "T") if c_to_t else raw_cb
+            cb_to_spot[lookup_cb] = spot
+            cb_to_spot[lookup_cb.replace("+", "")] = spot
     if not coordinates:
         raise ValueError(f"spot manifest contains no usable entries: {path}")
     return coordinates, cb_to_spot
@@ -502,6 +509,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         spike_names = sorted(discovered_spikes)
 
     print(f"[summary] work-dir={work_dir}")
+    print(f"[summary] assay={args.assay}")
     print(f"[summary] context-mode={args.context_mode}")
     for context in contexts:
         print(f"[summary] host-{context}-cov={host_cov_paths[context]}")
@@ -513,7 +521,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     try:
-        coordinates, cb_to_spot = load_spot_manifest(manifest_path)
+        coordinates, cb_to_spot = load_spot_manifest(
+            manifest_path,
+            c_to_t=args.assay in {"emseq", "cabernet"},
+        )
         spot_counts, host_mapped, host_valid = count_host_metrics(
             host_bam, args.cb_tag, cb_to_spot, args.min_mapping_quality
         )

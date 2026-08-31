@@ -100,6 +100,7 @@ if [[ -n "$spike_declaration" ]]; then
 fi
 
 declare -a summary_args=(
+    --assay "$assay"
     --work-dir "$final_dir"
     --min-mapping-quality "$minimum_mapq"
     --context-mode "$context_mode"
