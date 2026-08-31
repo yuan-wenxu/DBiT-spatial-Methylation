@@ -58,7 +58,7 @@ BISCUIT_DIRECTIONAL_MODE=${BISCUIT_DIRECTIONAL_MODE:-1}
 
 # BAM pooling configuration
 # per-thread memory for samtools sort (defaults to POOL_MEM/POOL_THREADS if empty)
-POOL_SORT_MEM=${POOL_SORT_MEM:-56G}
+POOL_SORT_MEM=${POOL_SORT_MEM:-48G}
 
 # M-bias configuration
 # all: host and configured spike-ins; host: host only; spike: spike-ins only

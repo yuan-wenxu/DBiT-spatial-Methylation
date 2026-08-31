@@ -174,7 +174,9 @@ def effective_batch_size(
 BarcodeMap = Dict[str, str]
 
 
-def load_barcode_whitelist(path: str) -> Tuple[BarcodeMap, List[Tuple[str, str]], int]:
+def load_barcode_whitelist(
+    path: str, c_to_t: bool = False
+) -> Tuple[BarcodeMap, List[Tuple[str, str]], int]:
     """Return sequence-to-index mapping, ordered entries, and barcode length."""
     whitelist_path = Path(path)
     if not whitelist_path.is_file():
@@ -225,9 +227,20 @@ def load_barcode_whitelist(path: str) -> Tuple[BarcodeMap, List[Tuple[str, str]]
         raise ValueError("barcode whitelist contains duplicate indices")
     if len(sequences) != len(set(sequences)):
         raise ValueError("barcode whitelist contains duplicate sequences")
+    lookup_sequences = [
+        sequence.replace("C", "T") if c_to_t else sequence
+        for sequence in sequences
+    ]
+    if len(lookup_sequences) != len(set(lookup_sequences)):
+        raise ValueError(
+            "barcode whitelist contains duplicate sequences after C-to-T conversion"
+        )
 
     return (
-        {sequence: barcode_id for barcode_id, sequence in entries},
+        {
+            lookup_sequence: barcode_id
+            for (barcode_id, _), lookup_sequence in zip(entries, lookup_sequences)
+        },
         entries,
         barcode_lengths.pop(),
     )
@@ -844,8 +857,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         chromosomes = parse_chromosomes(args.chromosomes)
         validate_chromosomes(args.reference, chromosomes)
+        barcode_c_to_t = args.assay in ("emseq", "cabernet")
         barcode_map, barcode_entries, barcode_length = load_barcode_whitelist(
-            args.barcode_whitelist
+            args.barcode_whitelist, c_to_t=barcode_c_to_t
         )
     except (OSError, ValueError) as exc:
         print(f"[methy-caller] error: {exc}", file=sys.stderr)
@@ -862,6 +876,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"[methy-caller] bam={args.bam}")
     print(f"[methy-caller] reference={args.reference}")
     print(f"[methy-caller] barcode-whitelist={args.barcode_whitelist}")
+    print(f"[methy-caller] barcode-c-to-t={str(barcode_c_to_t).lower()}")
     print(f"[methy-caller] spots={len(barcode_entries) ** 2}")
     print(f"[methy-caller] chromosomes={len(chromosomes)}")
     print(f"[methy-caller] context-mode={args.context_mode}")
