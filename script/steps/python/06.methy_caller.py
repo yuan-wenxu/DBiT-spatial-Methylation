@@ -19,8 +19,8 @@ from typing import BinaryIO, Dict, List, Optional, Set, Tuple
 import pysam
 
 # properly-paired primary alignment flags grouped by read alignment strand
-TOP_FLAGS: Set[int] = {99, 163}
-BOT_FLAGS: Set[int] = {83, 147}
+TOP_FLAGS: Set[int] = {99, 147}
+BOT_FLAGS: Set[int] = {83, 163}
 PAIRED_FLAGS: Set[int] = TOP_FLAGS | BOT_FLAGS
 
 # forward-strand CH contexts and their reverse-complement mapping
