@@ -267,17 +267,18 @@ Methylation interpretation is assay dependent:
 
 Only the primary paired-end orientation flags `83`, `99`, `147`, and `163` are
 accepted for methylation classification. For an observed `CG`, flags `99` and
-`147` represent the top/plus family, whereas flags `83` and `163` represent the
-bottom/minus family. CpG output does not retain that family label because both
-families update the same forward-C counter.
+`163` represent top/plus alignments, whereas flags `83` and `147` represent
+bottom/minus alignments. CpG output does not retain that strand label because
+both directions update the same forward-C counter.
 
 For non-CpG CH contexts (`CA`, `CC`, and `CT` in the reference), evidence comes
-only from the read family whose original strand carries the site cytosine:
-top-family reads for plus-strand sites, bottom-family reads for minus-strand
-sites. Opposite-family reads observe the unconvertible complement base G at
-the site and carry no methylation information. Observations also require the
-read to match the reference context at the neighboring base: the base after a
-plus-strand site or before a minus-strand site.
+only from reads aligned to the same reference strand: forward-aligned reads
+(flags `99` and `163`) for plus-strand sites and reverse-aligned reads (flags
+`83` and `147`) for minus-strand sites. Observations also require the read to
+match the reference context at the neighboring base: the base after a
+plus-strand site or before a minus-strand site. For reference `CC`, that
+neighbor may be converted (`C/T` on plus-strand evidence and the
+reverse-complement `G/A` on minus-strand evidence).
 
 - plus-strand evidence uses observed C or T
 - minus-strand evidence uses observed G or A

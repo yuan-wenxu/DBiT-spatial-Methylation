@@ -138,10 +138,10 @@ def count_ch_column(
     counts,
 ) -> None:
     pos = pileup_col.pos
-    family_flags = SHARED.TOP_FLAGS if strand == "+" else SHARED.BOT_FLAGS
+    strand_flags = SHARED.TOP_FLAGS if strand == "+" else SHARED.BOT_FLAGS
     for pileup_read in pileup_col.pileups:
         record = pileup_read.alignment
-        if record.flag not in family_flags:
+        if record.flag not in strand_flags:
             continue
         if pileup_read.is_del or pileup_read.is_refskip:
             continue
@@ -165,12 +165,16 @@ def count_ch_column(
         if strand == "+":
             if query_pos + 1 >= len(sequence):
                 continue
-            if sequence[query_pos + 1].upper() != context[1]:
+            if not SHARED.ch_neighbor_matches(
+                context, strand, sequence[query_pos + 1]
+            ):
                 continue
         else:
             if query_pos == 0:
                 continue
-            if sequence[query_pos - 1].upper() != SHARED.CH_REVERSE_NEIGHBOR[context]:
+            if not SHARED.ch_neighbor_matches(
+                context, strand, sequence[query_pos - 1]
+            ):
                 continue
         observation = SHARED.classify_ch_observation(base, strand, args.assay)
         if observation is None:

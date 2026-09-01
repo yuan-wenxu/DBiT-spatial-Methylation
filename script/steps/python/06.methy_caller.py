@@ -18,9 +18,9 @@ from typing import BinaryIO, Dict, List, Optional, Set, Tuple
 
 import pysam
 
-# properly-paired primary alignment flags for paired-end data
-TOP_FLAGS: Set[int] = {99, 147}
-BOT_FLAGS: Set[int] = {83, 163}
+# properly-paired primary alignment flags grouped by read alignment strand
+TOP_FLAGS: Set[int] = {99, 163}
+BOT_FLAGS: Set[int] = {83, 147}
 PAIRED_FLAGS: Set[int] = TOP_FLAGS | BOT_FLAGS
 
 # forward-strand CH contexts and their reverse-complement mapping
@@ -443,6 +443,17 @@ def classify_ch_observation(
     return (1, 0) if methylated else (0, 1)
 
 
+def ch_neighbor_matches(context: str, strand: str, base: str) -> bool:
+    """Return whether an observed neighbor is compatible with a CH context."""
+    observed = base.upper()
+    if context == "CC":
+        return observed in (("C", "T") if strand == "+" else ("G", "A"))
+    expected = (
+        context[1] if strand == "+" else CH_REVERSE_NEIGHBOR[context]
+    )
+    return observed == expected
+
+
 def count_ch_column(
     pileup_col,
     ctx: str,
@@ -454,10 +465,10 @@ def count_ch_column(
     r2_left: int, r2_right: int,
 ) -> None:
     pos = pileup_col.pos
-    family_flags = TOP_FLAGS if strand == "+" else BOT_FLAGS
+    strand_flags = TOP_FLAGS if strand == "+" else BOT_FLAGS
     for pileup_read in pileup_col.pileups:
         record = pileup_read.alignment
-        if record.flag not in family_flags:
+        if record.flag not in strand_flags:
             continue
         if pileup_read.is_del or pileup_read.is_refskip:
             continue
@@ -475,12 +486,12 @@ def count_ch_column(
         if strand == "+":
             if qpos + 1 >= len(seq):
                 continue
-            if seq[qpos + 1].upper() != ctx[1]:
+            if not ch_neighbor_matches(ctx, strand, seq[qpos + 1]):
                 continue
         else:
             if qpos == 0:
                 continue
-            if seq[qpos - 1].upper() != CH_REVERSE_NEIGHBOR[ctx]:
+            if not ch_neighbor_matches(ctx, strand, seq[qpos - 1]):
                 continue
         observation = classify_ch_observation(base, strand, assay)
         if observation is None:
