@@ -9,7 +9,7 @@ Usage: dbitm.sh <assay> <step> --input <path> [--config <path>] [--resume <step>
 Main control script for DBiT-spatial-Methylation pipeline.
 
 Arguments:
-  assay          Assay type: taps | taps-v2 | emseq | cabernet
+  assay          Assay type: taps | taps-v2 | emseq | cabernet | smc
   step           Pipeline step: fastp | barcode | spike-align | align | pool | mbias | spike-call | call | saturation | summary | methscan | all
   --input PATH   Raw FASTQ directory path
   --config PATH  Optional config file (default: config/dbitm.config.sh)
@@ -61,7 +61,7 @@ step=$1
 shift
 
 case "$assay" in
-    taps|taps-v2|emseq|cabernet) ;;
+    taps|taps-v2|emseq|cabernet|smc) ;;
     *) echo "[dbitm] error: unsupported assay: $assay" >&2; usage ;;
 esac
 

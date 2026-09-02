@@ -40,7 +40,7 @@ if (( $# == 3 )); then
     dry_run=true
 fi
 case "$assay" in
-    taps|taps-v2|emseq|cabernet) ;;
+    taps|taps-v2|emseq|cabernet|smc) ;;
     *) echo "[dbitm] barcode: unsupported assay: $assay" >&2; exit 1 ;;
 esac
 if [[ ! -d "$raw_path" ]]; then
@@ -52,7 +52,11 @@ SCRIPT_PATH=$(readlink -f "${BASH_SOURCE[0]}") || exit 1
 SCRIPT_DIR=$(cd "$(dirname "$SCRIPT_PATH")" && pwd) || exit 1
 REPO_DIR=${DBITM_PROJECT_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}
 config_file=${DBITM_CONFIG:-$REPO_DIR/config/dbitm.config.sh}
-python_script="$REPO_DIR/script/steps/python/02.extract_bc.py"
+if [[ "$assay" == smc ]]; then
+    python_script="$REPO_DIR/script/steps/python/02.smc_extract_bc.py"
+else
+    python_script="$REPO_DIR/script/steps/python/02.extract_bc.py"
+fi
 if [[ ! -f "$config_file" ]]; then
     echo "[dbitm] barcode: config file not found: $config_file" >&2
     exit 1
@@ -78,7 +82,11 @@ if [[ ! -f "$input_r1" || ! -f "$input_r2" ]]; then
     fi
 fi
 
-barcode_whitelist=${BARCODE_WHITELIST:-$REPO_DIR/docs/barcodes/barcodes50.tsv}
+if [[ "$assay" == smc ]]; then
+    barcode_whitelist=${SMC_BARCODE_WHITELIST:-$REPO_DIR/docs/barcodes/barcodes-smc.tsv}
+else
+    barcode_whitelist=${BARCODE_WHITELIST:-$REPO_DIR/docs/barcodes/barcodes50.tsv}
+fi
 if [[ "$barcode_whitelist" != /* ]]; then
     barcode_whitelist=$REPO_DIR/$barcode_whitelist
 fi
@@ -96,7 +104,8 @@ if [[ ! "$BARCODE_BATCH_SIZE" =~ ^[1-9][0-9]*$ ]] ; then
     echo "[dbitm] barcode: BARCODE_BATCH_SIZE must be >= 1" >&2
     exit 1
 fi
-case "$BARCODE_COMPRESSION_STEP" in python|shell) ;;
+compression_step=$BARCODE_COMPRESSION_STEP
+case "$compression_step" in python|shell) ;;
     *) echo "[dbitm] barcode: BARCODE_COMPRESSION_STEP must be python or shell" >&2; exit 1 ;;
 esac
 if [[ ! "$BARCODE_GZIP_LEVEL" =~ ^[0-9]$ ]] ; then
@@ -119,6 +128,16 @@ if [[ ! "$BARCODE_PROGRESS_READS" =~ ^[0-9]+$ ]] ; then
     echo "[dbitm] barcode: BARCODE_PROGRESS_READS must be >= 0" >&2
     exit 1
 fi
+if [[ "$assay" == smc ]]; then
+    if [[ ! "$SMC_MAX_CONVERSION_MISMATCHES" =~ ^[0-9]+$ ]]; then
+        echo "[dbitm] barcode: SMC_MAX_CONVERSION_MISMATCHES must be >= 0" >&2
+        exit 1
+    fi
+    if [[ ! "$SMC_MINIMUM_SCORE_MARGIN" =~ ^[0-9]+$ ]]; then
+        echo "[dbitm] barcode: SMC_MINIMUM_SCORE_MARGIN must be >= 0" >&2
+        exit 1
+    fi
+fi
 
 use_scratch=false
 run_r1=$input_r1
@@ -137,7 +156,7 @@ echo "[dbitm] progress interval: $BARCODE_PROGRESS_READS read pairs per chunk"
 if [[ "$assay" == taps-v2 ]]; then
     echo "[dbitm] methylated C positions: $BARCODE_METHYLATED_C_POSITIONS"
 fi
-echo "[dbitm] compression step: $BARCODE_COMPRESSION_STEP"
+echo "[dbitm] compression step: $compression_step"
 echo "[dbitm] output directory: $final_dir/barcode"
 
 if [[ "$dry_run" == true ]]; then
@@ -146,7 +165,7 @@ if [[ "$dry_run" == true ]]; then
         exit 1
     fi
     echo "[dbitm] dry-run: no files will be written"
-    echo "[dbitm] planned command: 02.extract_bc.py -> $final_dir/barcode"
+    echo "[dbitm] planned command: $(basename "$python_script") -> $final_dir/barcode"
     [[ -z ${SCRATCH_ROOT:-} ]] || echo "[dbitm] planned scratch root: $SCRATCH_ROOT"
     echo "====== dbitm barcode dry-run finished ======"
     exit 0
@@ -181,31 +200,51 @@ mkdir -p "$run_output"
 echo "[dbitm] starting barcode extraction..."
 
 python_compression=gzip
-if [[ "$BARCODE_COMPRESSION_STEP" == shell ]]; then
+if [[ "$compression_step" == shell ]]; then
     python_compression=none
 fi
 
-pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default python "$python_script" \
-    --assay "$assay" \
-    "$run_r1" "$run_r2" \
-    -b1 "$barcode_whitelist" \
-    -b2 "$barcode_whitelist" \
-    -o "$run_output" \
-    --chunks "$BARCODE_CHUNK" \
-    --batch-size "$BARCODE_BATCH_SIZE" \
-    --compression "$python_compression" \
-    --linker-bc "$BARCODE_LINKER_BC" \
-    --insert-left "$BARCODE_INSERT_LEFT" \
-    --methylated-c-positions "$BARCODE_METHYLATED_C_POSITIONS" \
-    --linker-edit-distance "$BARCODE_LINKER_EDIT_DISTANCE" \
-    --barcode-hamming-distance "$BARCODE_HAMMING_DISTANCE" \
-    --insert-left-edit-distance "$BARCODE_INSERT_LEFT_EDIT_DISTANCE" \
-    --progress-reads "$BARCODE_PROGRESS_READS" \
-    --gzip-level "$BARCODE_GZIP_LEVEL" \
-    > "$run_output/barcode.log" 2>&1
+if [[ "$assay" == smc ]]; then
+    pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default python "$python_script" \
+        --barcode-fastq "$run_r1" \
+        --genomic-fastq "$run_r2" \
+        --output-dir "$run_output" \
+        --barcode-whitelist "$barcode_whitelist" \
+        --chunks "$BARCODE_CHUNK" \
+        --batch-size "$BARCODE_BATCH_SIZE" \
+        --compression "$python_compression" \
+        --linker-bc "$SMC_LINKER_BC" \
+        --insert-left "$SMC_INSERT_LEFT" \
+        --anchor-edit-distance "$BARCODE_LINKER_EDIT_DISTANCE" \
+        --max-conversion-mismatches "$SMC_MAX_CONVERSION_MISMATCHES" \
+        --minimum-score-margin "$SMC_MINIMUM_SCORE_MARGIN" \
+        --barcode-hamming-distance "$BARCODE_HAMMING_DISTANCE" \
+        --progress-reads "$BARCODE_PROGRESS_READS" \
+        --gzip-level "$BARCODE_GZIP_LEVEL" \
+        > "$run_output/barcode.log" 2>&1
+else
+    pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default python "$python_script" \
+        --assay "$assay" \
+        "$run_r1" "$run_r2" \
+        -b1 "$barcode_whitelist" \
+        -b2 "$barcode_whitelist" \
+        -o "$run_output" \
+        --chunks "$BARCODE_CHUNK" \
+        --batch-size "$BARCODE_BATCH_SIZE" \
+        --compression "$python_compression" \
+        --linker-bc "$BARCODE_LINKER_BC" \
+        --insert-left "$BARCODE_INSERT_LEFT" \
+        --methylated-c-positions "$BARCODE_METHYLATED_C_POSITIONS" \
+        --linker-edit-distance "$BARCODE_LINKER_EDIT_DISTANCE" \
+        --barcode-hamming-distance "$BARCODE_HAMMING_DISTANCE" \
+        --insert-left-edit-distance "$BARCODE_INSERT_LEFT_EDIT_DISTANCE" \
+        --progress-reads "$BARCODE_PROGRESS_READS" \
+        --gzip-level "$BARCODE_GZIP_LEVEL" \
+        > "$run_output/barcode.log" 2>&1
+fi
 
 echo "[dbitm] barcode extraction finished successfully"
-if [[ "$BARCODE_COMPRESSION_STEP" == shell ]]; then
+if [[ "$compression_step" == shell ]]; then
     fastq_files=("$run_output"/*.fastq)
     if [[ -e "${fastq_files[0]}" ]]; then
         echo "[dbitm] compressing barcode FASTQ files with pigz..."
@@ -233,6 +272,9 @@ if [[ "$BARCODE_COMPRESSION_STEP" == shell ]]; then
             -e 's/\.fastq"/\.fastq.gz"/g' \
             -e 's/"compression": "none"/"compression": "gzip"/g' \
             "$run_output"/*.json
+        sed -i \
+            -e 's/^\[extract-bc\] compression=none$/[extract-bc] compression=gzip/' \
+            "$run_output/barcode.log"
         echo "[dbitm] pigz compression finished successfully"
     else
         echo "[dbitm] no barcode FASTQ files to compress"

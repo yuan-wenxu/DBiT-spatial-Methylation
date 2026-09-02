@@ -39,6 +39,10 @@ if (( $# == 3 )); then
     fi
     dry_run=true
 fi
+case "$assay" in
+    taps|taps-v2|emseq|cabernet|smc) ;;
+    *) echo "[dbitm] fastp: unsupported assay: $assay" >&2; exit 1 ;;
+esac
 if [[ ! -d "$raw_path" ]]; then
     echo "[dbitm] fastp: FASTQ directory not found: $raw_path" >&2
     exit 1
@@ -67,6 +71,7 @@ run_input=$raw_abs
 run_output=$final_dir/fastp
 
 echo "====== dbitm fastp ======"
+echo "[dbitm] assay: $assay"
 echo "[dbitm] input directory: $raw_abs"
 echo "[dbitm] config: ${config_file}"
 echo "[dbitm] threads: $FASTP_THREADS"
