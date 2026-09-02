@@ -40,7 +40,7 @@ if (( $# == 3 )); then
     dry_run=true
 fi
 case "$assay" in
-    taps|taps-v2|emseq|cabernet) ;;
+    taps|taps-v2|emseq|cabernet|smc) ;;
     *) echo "[dbitm] align: unsupported assay: $assay" >&2; exit 1 ;;
 esac
 if [[ ! -d "$raw_path" ]]; then
@@ -75,6 +75,7 @@ fi
 
 aligner=""
 reference=""
+biscuit_directional_mode=$BISCUIT_DIRECTIONAL_MODE
 case "$assay" in
     taps|taps-v2)
         aligner=bwa
@@ -87,6 +88,15 @@ case "$assay" in
     emseq|cabernet)
         aligner=biscuit
         reference=$BISCUIT_REFERENCE
+        if [[ -z "$reference" ]]; then
+            echo "[dbitm] align: BISCUIT_REFERENCE is required for assay '$assay'" >&2
+            exit 1
+        fi
+        ;;
+    smc)
+        aligner=biscuit
+        reference=$BISCUIT_REFERENCE
+        biscuit_directional_mode=1
         if [[ -z "$reference" ]]; then
             echo "[dbitm] align: BISCUIT_REFERENCE is required for assay '$assay'" >&2
             exit 1
@@ -130,7 +140,7 @@ echo "[dbitm] reference: $reference"
 echo "[dbitm] input directory: $barcode_dir"
 echo "[dbitm] config: $config_file"
 if [[ "$aligner" == biscuit ]]; then
-    echo "[dbitm] biscuit directional mode: $BISCUIT_DIRECTIONAL_MODE"
+    echo "[dbitm] biscuit directional mode: $biscuit_directional_mode"
 fi
 echo "[dbitm] output directory: $final_dir/align"
 
@@ -139,15 +149,26 @@ if [[ "$dry_run" == true ]]; then
         echo "[dbitm] align: SCRATCH_ROOT must be an absolute path or empty" >&2
         exit 1
     fi
-    declare -a dry_r1_files=()
+    declare -a dry_chunk_files=()
     if [[ -d "$barcode_dir" ]]; then
         shopt -s nullglob
-        dry_r1_files=("$barcode_dir"/*.R1.demux.fastq.gz)
+        if [[ "$assay" == smc ]]; then
+            dry_chunk_files=("$barcode_dir"/*.watson.short-genomic.fastq.gz)
+        else
+            dry_chunk_files=("$barcode_dir"/*.R1.demux.fastq.gz)
+        fi
         shopt -u nullglob
     fi
     echo "[dbitm] dry-run: no files will be written"
-    echo "[dbitm] discovered chunks: ${#dry_r1_files[@]}"
-    echo "[dbitm] expected input: $barcode_dir/*.R1.demux.fastq.gz"
+    echo "[dbitm] discovered chunks: ${#dry_chunk_files[@]}"
+    if [[ "$assay" == smc ]]; then
+        echo "[dbitm] expected Watson input: $barcode_dir/*.watson.{short-genomic,genomic}.fastq.gz"
+        echo "[dbitm] expected Crick input: $barcode_dir/*.crick.{short-genomic,genomic}.fastq.gz"
+        echo "[dbitm] Watson mate assignment: R1/parent=genomic R2/daughter=short-genomic"
+        echo "[dbitm] Crick mate assignment: R1/parent=short-genomic R2/daughter=genomic"
+    else
+        echo "[dbitm] expected input: $barcode_dir/*.R1.demux.fastq.gz"
+    fi
     echo "[dbitm] planned command: $aligner + sinto nametotag -> $final_dir/align"
     [[ -z ${SCRATCH_ROOT:-} ]] || echo "[dbitm] planned scratch root: $SCRATCH_ROOT"
     echo "====== dbitm align dry-run finished ======"
@@ -170,12 +191,21 @@ if [[ -n ${SCRATCH_ROOT:-} ]]; then
     enable_cleanup
     mkdir -p "$run_input"
     shopt -s nullglob
-    scratch_fastq_files=(
-        "$barcode_dir"/*.R1.demux.fastq.gz
-        "$barcode_dir"/*.R2.demux.fastq.gz
-    )
+    if [[ "$assay" == smc ]]; then
+        scratch_fastq_files=(
+            "$barcode_dir"/*.watson.short-genomic.fastq.gz
+            "$barcode_dir"/*.watson.genomic.fastq.gz
+            "$barcode_dir"/*.crick.short-genomic.fastq.gz
+            "$barcode_dir"/*.crick.genomic.fastq.gz
+        )
+    else
+        scratch_fastq_files=(
+            "$barcode_dir"/*.R1.demux.fastq.gz
+            "$barcode_dir"/*.R2.demux.fastq.gz
+        )
+    fi
     shopt -u nullglob
-    echo "[dbitm] copying ${#scratch_fastq_files[@]} demux FASTQ files to scratch: $run_input"
+    echo "[dbitm] copying ${#scratch_fastq_files[@]} host FASTQ files to scratch: $run_input"
     if (( ${#scratch_fastq_files[@]} > 0 )); then
         cp -a "${scratch_fastq_files[@]}" "$run_input"/
     fi
@@ -188,43 +218,79 @@ mkdir -p "$run_output/logs"
 align_log=$run_output/align.log
 : > "$align_log"
 
-shopt -s nullglob
-r1_files=("$run_input"/*.R1.demux.fastq.gz)
-shopt -u nullglob
-if (( ${#r1_files[@]} == 0 )); then
-    echo "[dbitm] align: no R1 demux FASTQ chunks found: $run_input/*.R1.demux.fastq.gz" >&2
-    exit 1
-fi
-
-chunk_count=${#r1_files[@]}
-parallel_jobs=$chunk_count
-align_threads_per_job=$ALIGN_THREADS_PER_CHUNK
-total_align_threads=$((chunk_count * align_threads_per_job))
-
-echo "[dbitm] chunks: $chunk_count"
-echo "[dbitm] parallel jobs: $parallel_jobs"
-echo "[dbitm] threads per chunk: $align_threads_per_job"
-echo "[dbitm] total aligner threads: $total_align_threads"
-
 declare -a chunks=()
+declare -a r1_files=()
 declare -a r2_files=()
 declare -a output_bams=()
 declare -a chunk_logs=()
-for r1 in "${r1_files[@]}"; do
-    filename=$(basename "$r1")
-    chunk=${filename%.R1.demux.fastq.gz}
-    r2=$run_input/$chunk.R2.demux.fastq.gz
-    output_bam=$run_output/$chunk.cb.bam
-    if [[ ! -f "$r2" ]]; then
-        echo "[dbitm] align: paired R2 FASTQ not found for chunk '$chunk': $r2" >&2
+if [[ "$assay" == smc ]]; then
+    shopt -s nullglob
+    watson_short_files=("$run_input"/*.watson.short-genomic.fastq.gz)
+    shopt -u nullglob
+    if (( ${#watson_short_files[@]} == 0 )); then
+        echo "[dbitm] align: no Watson FASTQ chunks found: $run_input/*.watson.short-genomic.fastq.gz" >&2
         exit 1
     fi
+    chunk_count=${#watson_short_files[@]}
+    for watson_short in "${watson_short_files[@]}"; do
+        filename=$(basename "$watson_short")
+        chunk=${filename%.watson.short-genomic.fastq.gz}
+        watson_long=$run_input/$chunk.watson.genomic.fastq.gz
+        crick_short=$run_input/$chunk.crick.short-genomic.fastq.gz
+        crick_long=$run_input/$chunk.crick.genomic.fastq.gz
+        for paired_fastq in "$watson_long" "$crick_short" "$crick_long"; do
+            if [[ ! -f "$paired_fastq" ]]; then
+                echo "[dbitm] align: paired SmC FASTQ not found for chunk '$chunk': $paired_fastq" >&2
+                exit 1
+            fi
+        done
 
-    chunks+=("$chunk")
-    r2_files+=("$r2")
-    output_bams+=("$output_bam")
-    chunk_logs+=("$run_output/logs/$chunk.log")
-done
+        chunks+=("$chunk.watson" "$chunk.crick")
+        r1_files+=("$watson_long" "$crick_short")
+        r2_files+=("$watson_short" "$crick_long")
+        output_bams+=(
+            "$run_output/$chunk.watson.cb.bam"
+            "$run_output/$chunk.crick.cb.bam"
+        )
+        chunk_logs+=(
+            "$run_output/logs/$chunk.watson.log"
+            "$run_output/logs/$chunk.crick.log"
+        )
+    done
+else
+    shopt -s nullglob
+    r1_files=("$run_input"/*.R1.demux.fastq.gz)
+    shopt -u nullglob
+    if (( ${#r1_files[@]} == 0 )); then
+        echo "[dbitm] align: no R1 demux FASTQ chunks found: $run_input/*.R1.demux.fastq.gz" >&2
+        exit 1
+    fi
+    chunk_count=${#r1_files[@]}
+    for r1 in "${r1_files[@]}"; do
+        filename=$(basename "$r1")
+        chunk=${filename%.R1.demux.fastq.gz}
+        r2=$run_input/$chunk.R2.demux.fastq.gz
+        if [[ ! -f "$r2" ]]; then
+            echo "[dbitm] align: paired R2 FASTQ not found for chunk '$chunk': $r2" >&2
+            exit 1
+        fi
+
+        chunks+=("$chunk")
+        r2_files+=("$r2")
+        output_bams+=("$run_output/$chunk.cb.bam")
+        chunk_logs+=("$run_output/logs/$chunk.log")
+    done
+fi
+
+parallel_jobs=$chunk_count
+align_threads_per_job=$ALIGN_THREADS_PER_CHUNK
+total_align_threads=$((parallel_jobs * align_threads_per_job))
+
+echo "[dbitm] chunks: $chunk_count"
+echo "[dbitm] alignments: ${#chunks[@]}"
+echo "[dbitm] parallel jobs: $parallel_jobs"
+echo "[dbitm] threads per alignment: $align_threads_per_job"
+echo "[dbitm] total aligner threads: $total_align_threads"
 
 align_chunk() {
     local chunk=$1
@@ -234,6 +300,9 @@ align_chunk() {
     local chunk_log=$5
     echo "[dbitm] aligning chunk: $chunk"
     echo "[$chunk] aligner=$aligner threads=$align_threads_per_job r1=$r1 r2=$r2 output=$output_bam" > "$chunk_log"
+    if [[ "$assay" == smc ]]; then
+        echo "[$chunk] r1-role=parent r2-role=daughter biscuit-directional-mode=1" >> "$chunk_log"
+    fi
     if [[ "$aligner" == bwa ]]; then
         pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default \
             bwa mem -t "$align_threads_per_job" "$reference" "$r1" "$r2" \
@@ -243,7 +312,7 @@ align_chunk() {
                 >> "$chunk_log" 2>&1
     else
         pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default \
-            biscuit align -@ "$align_threads_per_job" -b "$BISCUIT_DIRECTIONAL_MODE" \
+            biscuit align -@ "$align_threads_per_job" -b "$biscuit_directional_mode" \
                 "$reference" "$r1" "$r2" \
             2>> "$chunk_log" \
             | pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default \

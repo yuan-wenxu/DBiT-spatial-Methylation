@@ -11,7 +11,7 @@ declare -A BWA_SPIKE_IN_INDEXES=(
     [lambda]=""
     [puc19]=""
 )
-# EM-seq/Cabernet biscuit-indexed reference FASTA
+# EM-seq/Cabernet/SmC biscuit-indexed reference FASTA
 BISCUIT_REFERENCE=${BISCUIT_REFERENCE:-}
 # Absolute paths to spike-in biscuit indexes used by EM-seq/Cabernet align.
 # Bash equivalent of: {"lambda": "/path/to/index", "puc19": "/path/to/index"}
@@ -60,7 +60,8 @@ SMC_MINIMUM_SCORE_MARGIN=${SMC_MINIMUM_SCORE_MARGIN:-3}
 ALIGN_THREADS_PER_CHUNK=${ALIGN_THREADS_PER_CHUNK:-8}
 # aligner threads used by each spike-in FASTQ chunk
 SPIKE_ALIGN_THREADS_PER_CHUNK=${SPIKE_ALIGN_THREADS_PER_CHUNK:-8}
-# paired-end library mode: 1 for directional, 0 for non-directional
+# paired-end library mode for EM-seq/Cabernet: 1 for directional, 0 for non-directional
+# SmC always uses directional mode 1 after Watson/Crick mate assignment.
 BISCUIT_DIRECTIONAL_MODE=${BISCUIT_DIRECTIONAL_MODE:-1}
 
 # BAM pooling configuration
