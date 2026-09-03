@@ -35,7 +35,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--assay",
-        choices=("taps", "taps-v2", "emseq", "cabernet"),
+        choices=("taps", "taps-v2", "emseq", "cabernet", "smc"),
         required=True,
     )
     parser.add_argument("--bam", required=True)
@@ -120,12 +120,11 @@ def count_cg_column(pileup_col, args: argparse.Namespace, counts) -> None:
             args.r2_right_trim,
         ):
             continue
-        observation = SHARED.classify_cg_observation(
+        methylated = SHARED.classify_cg_observation(
             sequence[query_pos : next_pos + 1].upper(), record.flag, args.assay
         )
-        if observation is None:
+        if methylated is None:
             continue
-        methylated, _ = observation
         values = counts[pos]
         values[0 if methylated else 1] += 1
 

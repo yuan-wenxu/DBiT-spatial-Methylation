@@ -135,7 +135,7 @@ for sequence removed during barcode extraction; R2 does not.
 | Assay | Converted `TG`/`CA` | Retained `CG` |
 |---|---|---|
 | TAPS / TAPS-v2 | methylated | unmethylated |
-| EM-seq / Cabernet | unmethylated | methylated |
+| EM-seq / Cabernet / SmC | unmethylated | methylated |
 
 Only paired-end orientation flags `83`, `99`, `147`, and `163` are used for
 methylation classification.
@@ -183,10 +183,10 @@ stats.json
 barcode.log
 ```
 
-SmC writes Watson, Crick, ambiguous, and spike-in pairs. Its stats follow:
+SmC writes Watson, Crick, ambiguous, and discarded pairs. Its stats follow:
 
 ```text
-total_reads = kept_reads + spike_in_reads
+total_reads = kept_reads + discarded_reads
 kept_reads = informative_reads + ambiguous_reads
 informative_reads = watson_reads + crick_reads
 ```
@@ -218,7 +218,11 @@ Standard assays produce `NNNN.cb.bam`; SmC produces
 
 `03.spike_align.sh` maps each spike-in FASTQ pair independently to every
 configured spike-in reference and writes one BAM and flagstat report per
-chunk/reference combination.
+chunk/reference combination. For SmC, spike-in molecules are already present
+in the Watson and Crick FASTQs, so both groups are aligned with the same mate
+assignments shown above and `biscuit align -b 1`. SmC outputs retain the group
+in their names, for example `0001.watson.lambda.bam` and
+`0001.crick.lambda.bam`; discarded reads are not used as spike-in input.
 
 ### 4.4 BAM pooling
 

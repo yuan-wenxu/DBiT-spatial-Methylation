@@ -13,7 +13,7 @@ declare -A BWA_SPIKE_IN_INDEXES=(
 )
 # EM-seq/Cabernet/SmC biscuit-indexed reference FASTA
 BISCUIT_REFERENCE=${BISCUIT_REFERENCE:-}
-# Absolute paths to spike-in biscuit indexes used by EM-seq/Cabernet align.
+# Absolute paths to spike-in biscuit indexes used by EM-seq/Cabernet/SmC align.
 # Bash equivalent of: {"lambda": "/path/to/index", "puc19": "/path/to/index"}
 declare -A BISCUIT_SPIKE_IN_INDEXES=(
     [lambda]=""

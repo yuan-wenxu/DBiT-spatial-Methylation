@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Methylation caller for DBiT TAPS/TAPS-v2, EM-seq, and Cabernet data.
+"""Methylation caller for DBiT TAPS/TAPS-v2, EM-seq, Cabernet, and SmC data.
 """
 
 from __future__ import annotations
@@ -37,12 +37,13 @@ WORKER_CHROMOSOME_SEQUENCE: Optional[str] = None
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Methylation caller for DBiT TAPS/TAPS-v2, EM-seq, and Cabernet data."
+            "Methylation caller for DBiT TAPS/TAPS-v2, EM-seq, Cabernet, "
+            "and SmC data."
         )
     )
     parser.add_argument(
         "--assay",
-        choices=("taps", "taps-v2", "emseq", "cabernet"),
+        choices=("taps", "taps-v2", "emseq", "cabernet", "smc"),
         required=True,
         help="Methylation assay used to interpret converted bases.",
     )
@@ -356,25 +357,18 @@ def classify_cg_observation(
     dinucleotide: str,
     flag: int,
     assay: str,
-) -> Optional[Tuple[bool, str]]:
-    """Return methylation status and cytosine strand for a CpG observation."""
-    if dinucleotide == "TG":
-        strand = "+"
-    elif dinucleotide == "CA":
-        strand = "-"
+) -> Optional[bool]:
+    """Return methylation status for a CpG observation, or None if invalid."""
+    if dinucleotide == "TG" or dinucleotide == "CA":
+        converted = True
     elif dinucleotide == "CG":
-        if flag in TOP_FLAGS:
-            strand = "+"
-        elif flag in BOT_FLAGS:
-            strand = "-"
-        else:
+        if flag not in PAIRED_FLAGS:
             return None
+        converted = False
     else:
         return None
 
-    converted = dinucleotide in {"TG", "CA"}
-    methylated = not converted if assay in {"emseq", "cabernet"} else converted
-    return methylated, strand
+    return not converted if assay in {"emseq", "cabernet", "smc"} else converted
 
 
 def count_cg_column(
@@ -410,10 +404,9 @@ def count_cg_column(
             continue
         dinuc = (seq[qpos] + seq[next_qpos]).upper()
         # pos is the forward-strand C used for evidence from both strands.
-        observation = classify_cg_observation(dinuc, record.flag, assay)
-        if observation is None:
+        methylated = classify_cg_observation(dinuc, record.flag, assay)
+        if methylated is None:
             continue
-        methylated, _ = observation
         value_index = 0 if methylated else 1
         try:
             cb = record.get_tag(cb_tag)
@@ -439,7 +432,7 @@ def classify_ch_observation(
             return None
         retained = base == "G"
 
-    methylated = retained if assay in {"emseq", "cabernet"} else not retained
+    methylated = retained if assay in {"emseq", "cabernet", "smc"} else not retained
     return (1, 0) if methylated else (0, 1)
 
 

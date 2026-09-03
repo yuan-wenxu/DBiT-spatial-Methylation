@@ -56,7 +56,7 @@ if (( $# == 3 )); then
     dry_run=true
 fi
 case "$assay" in
-    taps|taps-v2|emseq|cabernet) ;;
+    taps|taps-v2|emseq|cabernet|smc) ;;
     *) echo "[dbitm] spike-align: unsupported assay: $assay" >&2; exit 1 ;;
 esac
 if [[ ! -d "$raw_path" ]]; then
@@ -85,6 +85,7 @@ fi
 
 aligner=""
 index_variable=""
+biscuit_directional_mode=$BISCUIT_DIRECTIONAL_MODE
 case "$assay" in
     taps|taps-v2)
         aligner=bwa
@@ -93,6 +94,11 @@ case "$assay" in
     emseq|cabernet)
         aligner=biscuit
         index_variable=BISCUIT_SPIKE_IN_INDEXES
+        ;;
+    smc)
+        aligner=biscuit
+        index_variable=BISCUIT_SPIKE_IN_INDEXES
+        biscuit_directional_mode=1
         ;;
 esac
 
@@ -160,7 +166,7 @@ done
 echo "[dbitm] input directory: $barcode_dir"
 echo "[dbitm] config: $config_file"
 if [[ "$aligner" == biscuit ]]; then
-    echo "[dbitm] biscuit directional mode: $BISCUIT_DIRECTIONAL_MODE"
+    echo "[dbitm] biscuit directional mode: $biscuit_directional_mode"
 fi
 echo "[dbitm] output directory: $final_dir/spike_align"
 
@@ -172,12 +178,23 @@ if [[ "$dry_run" == true ]]; then
     declare -a dry_r1_files=()
     if [[ -d "$barcode_dir" ]]; then
         shopt -s nullglob
-        dry_r1_files=("$barcode_dir"/*.R1.spike-in.fastq.gz)
+        if [[ "$assay" == smc ]]; then
+            dry_r1_files=("$barcode_dir"/*.watson.short-genomic.fastq.gz)
+        else
+            dry_r1_files=("$barcode_dir"/*.R1.spike-in.fastq.gz)
+        fi
         shopt -u nullglob
     fi
     echo "[dbitm] dry-run: no files will be written"
     echo "[dbitm] discovered chunks: ${#dry_r1_files[@]}"
-    echo "[dbitm] expected input: $barcode_dir/*.R1.spike-in.fastq.gz"
+    if [[ "$assay" == smc ]]; then
+        echo "[dbitm] expected Watson input: $barcode_dir/*.watson.{short-genomic,genomic}.fastq.gz"
+        echo "[dbitm] expected Crick input: $barcode_dir/*.crick.{short-genomic,genomic}.fastq.gz"
+        echo "[dbitm] Watson mate assignment: R1/parent=genomic R2/daughter=short-genomic"
+        echo "[dbitm] Crick mate assignment: R1/parent=short-genomic R2/daughter=genomic"
+    else
+        echo "[dbitm] expected input: $barcode_dir/*.R1.spike-in.fastq.gz"
+    fi
     echo "[dbitm] planned command: $aligner -> $final_dir/spike_align"
     [[ -z ${SCRATCH_ROOT:-} ]] || echo "[dbitm] planned scratch root: $SCRATCH_ROOT"
     echo "====== dbitm spike-align dry-run finished ======"
@@ -200,12 +217,21 @@ if [[ -n ${SCRATCH_ROOT:-} ]]; then
     enable_cleanup
     mkdir -p "$run_input"
     shopt -s nullglob
-    scratch_fastq_files=(
-        "$barcode_dir"/*.R1.spike-in.fastq.gz
-        "$barcode_dir"/*.R2.spike-in.fastq.gz
-    )
+    if [[ "$assay" == smc ]]; then
+        scratch_fastq_files=(
+            "$barcode_dir"/*.watson.short-genomic.fastq.gz
+            "$barcode_dir"/*.watson.genomic.fastq.gz
+            "$barcode_dir"/*.crick.short-genomic.fastq.gz
+            "$barcode_dir"/*.crick.genomic.fastq.gz
+        )
+    else
+        scratch_fastq_files=(
+            "$barcode_dir"/*.R1.spike-in.fastq.gz
+            "$barcode_dir"/*.R2.spike-in.fastq.gz
+        )
+    fi
     shopt -u nullglob
-    echo "[dbitm] copying ${#scratch_fastq_files[@]} spike-in FASTQ files to scratch: $run_input"
+    echo "[dbitm] copying ${#scratch_fastq_files[@]} spike alignment FASTQ files to scratch: $run_input"
     if (( ${#scratch_fastq_files[@]} > 0 )); then
         cp -a "${scratch_fastq_files[@]}" "$run_input"/
     fi
@@ -218,39 +244,71 @@ mkdir -p "$run_output/logs"
 align_log=$run_output/spike_align.log
 : > "$align_log"
 
-shopt -s nullglob
-r1_files=("$run_input"/*.R1.spike-in.fastq.gz)
-shopt -u nullglob
-if (( ${#r1_files[@]} == 0 )); then
-    echo "[dbitm] spike-align: no R1 spike-in FASTQ chunks found: $run_input/*.R1.spike-in.fastq.gz" >&2
-    exit 1
-fi
-
-chunk_count=${#r1_files[@]}
-parallel_jobs=$chunk_count
-align_threads_per_job=$SPIKE_ALIGN_THREADS_PER_CHUNK
-total_align_threads=$((chunk_count * align_threads_per_job))
-
-echo "[dbitm] chunks: $chunk_count"
-echo "[dbitm] parallel jobs: $parallel_jobs"
-echo "[dbitm] threads per chunk: $align_threads_per_job"
-echo "[dbitm] total aligner threads: $total_align_threads"
-
 declare -a chunks=()
+declare -a r1_files=()
 declare -a r2_files=()
 declare -a chunk_logs=()
-for r1 in "${r1_files[@]}"; do
-    filename=$(basename "$r1")
-    chunk=${filename%.R1.spike-in.fastq.gz}
-    r2=$run_input/$chunk.R2.spike-in.fastq.gz
-    if [[ ! -f "$r2" ]]; then
-        echo "[dbitm] spike-align: paired R2 FASTQ not found for chunk '$chunk': $r2" >&2
+if [[ "$assay" == smc ]]; then
+    shopt -s nullglob
+    watson_short_files=("$run_input"/*.watson.short-genomic.fastq.gz)
+    shopt -u nullglob
+    if (( ${#watson_short_files[@]} == 0 )); then
+        echo "[dbitm] spike-align: no Watson FASTQ chunks found: $run_input/*.watson.short-genomic.fastq.gz" >&2
         exit 1
     fi
-    chunks+=("$chunk")
-    r2_files+=("$r2")
-    chunk_logs+=("$run_output/logs/$chunk.log")
-done
+    chunk_count=${#watson_short_files[@]}
+    for watson_short in "${watson_short_files[@]}"; do
+        filename=$(basename "$watson_short")
+        chunk=${filename%.watson.short-genomic.fastq.gz}
+        watson_long=$run_input/$chunk.watson.genomic.fastq.gz
+        crick_short=$run_input/$chunk.crick.short-genomic.fastq.gz
+        crick_long=$run_input/$chunk.crick.genomic.fastq.gz
+        for paired_fastq in "$watson_long" "$crick_short" "$crick_long"; do
+            if [[ ! -f "$paired_fastq" ]]; then
+                echo "[dbitm] spike-align: paired SmC FASTQ not found for chunk '$chunk': $paired_fastq" >&2
+                exit 1
+            fi
+        done
+        chunks+=("$chunk.watson" "$chunk.crick")
+        r1_files+=("$watson_long" "$crick_short")
+        r2_files+=("$watson_short" "$crick_long")
+        chunk_logs+=(
+            "$run_output/logs/$chunk.watson.log"
+            "$run_output/logs/$chunk.crick.log"
+        )
+    done
+else
+    shopt -s nullglob
+    r1_files=("$run_input"/*.R1.spike-in.fastq.gz)
+    shopt -u nullglob
+    if (( ${#r1_files[@]} == 0 )); then
+        echo "[dbitm] spike-align: no R1 spike-in FASTQ chunks found: $run_input/*.R1.spike-in.fastq.gz" >&2
+        exit 1
+    fi
+    chunk_count=${#r1_files[@]}
+    for r1 in "${r1_files[@]}"; do
+        filename=$(basename "$r1")
+        chunk=${filename%.R1.spike-in.fastq.gz}
+        r2=$run_input/$chunk.R2.spike-in.fastq.gz
+        if [[ ! -f "$r2" ]]; then
+            echo "[dbitm] spike-align: paired R2 FASTQ not found for chunk '$chunk': $r2" >&2
+            exit 1
+        fi
+        chunks+=("$chunk")
+        r2_files+=("$r2")
+        chunk_logs+=("$run_output/logs/$chunk.log")
+    done
+fi
+
+parallel_jobs=$chunk_count
+align_threads_per_job=$SPIKE_ALIGN_THREADS_PER_CHUNK
+total_align_threads=$((parallel_jobs * align_threads_per_job))
+
+echo "[dbitm] chunks: $chunk_count"
+echo "[dbitm] alignments: ${#chunks[@]}"
+echo "[dbitm] parallel jobs: $parallel_jobs"
+echo "[dbitm] threads per alignment: $align_threads_per_job"
+echo "[dbitm] total aligner threads: $total_align_threads"
 
 align_spike_chunk() {
     local chunk=$1
@@ -281,7 +339,7 @@ align_spike_chunk() {
                     >> "$chunk_log" 2>&1
         else
             pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default \
-                biscuit align -@ "$align_threads_per_job" -b "$BISCUIT_DIRECTIONAL_MODE" \
+                biscuit align -@ "$align_threads_per_job" -b "$biscuit_directional_mode" \
                     "$spike_reference" "$r1" "$r2" \
                 2>> "$chunk_log" \
                 | pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default \

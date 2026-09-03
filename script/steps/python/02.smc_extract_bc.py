@@ -106,7 +106,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Barcode whitelist, one sequence per line. Each barcode must "
             "match exactly or correct to the unique nearest whitelist "
-            "entry; otherwise the pair is written to spike-in output."
+            "entry; otherwise the pair is written to discarded output."
         ),
     )
     parser.add_argument(
@@ -365,7 +365,7 @@ def write_record(handle: TextIO, record: FastqRecord) -> None:
     handle.write("\n".join(record) + "\n")
 
 
-GROUPS = ("watson", "crick", "ambiguous", "spike_in")
+GROUPS = ("watson", "crick", "ambiguous", "discarded")
 REJECT_NAMES = (
     "short_r1",
     "structure_mismatch",
@@ -383,7 +383,7 @@ COUNT_KEYS = (
     "watson_pairs",
     "crick_pairs",
     "ambiguous_pairs",
-    "spike_in_pairs",
+    "discarded_pairs",
     *REJECT_NAMES,
     *STRAND_AMBIGUITY_NAMES,
 )
@@ -423,8 +423,8 @@ def chunk_output_paths(
         "crick_genomic": output_dir / f"{chunk}.crick.genomic{suffix}",
         "ambiguous_first": output_dir / f"{chunk}.ambiguous.barcode-raw{suffix}",
         "ambiguous_genomic": output_dir / f"{chunk}.ambiguous.genomic{suffix}",
-        "spike_in_first": output_dir / f"{chunk}.spike-in.barcode-raw{suffix}",
-        "spike_in_genomic": output_dir / f"{chunk}.spike-in.genomic{suffix}",
+        "discarded_first": output_dir / f"{chunk}.discarded.barcode-raw{suffix}",
+        "discarded_genomic": output_dir / f"{chunk}.discarded.genomic{suffix}",
         "stats": output_dir / f"{chunk}.stats.json",
     }
 
@@ -454,24 +454,24 @@ def rejected_result(
 ) -> SplitResult:
     if barcode1 is None or barcode2 is None:
         return SplitResult(
-            "spike_in",
+            "discarded",
             barcode_record,
             genomic_record,
             reasons,
         )
     first: FastqRecord = (
-        annotate_header(barcode_record[0], barcode1, barcode2, "S"),
+        annotate_header(barcode_record[0], barcode1, barcode2, "D"),
         barcode_record[1],
         barcode_record[2],
         barcode_record[3],
     )
     genomic: FastqRecord = (
-        annotate_header(genomic_record[0], barcode1, barcode2, "S"),
+        annotate_header(genomic_record[0], barcode1, barcode2, "D"),
         genomic_record[1],
         genomic_record[2],
         genomic_record[3],
     )
-    return SplitResult("spike_in", first, genomic, reasons)
+    return SplitResult("discarded", first, genomic, reasons)
 
 
 def split_pair(
@@ -591,7 +591,7 @@ def split_pair(
         "watson": "W",
         "crick": "C",
         "ambiguous": "U",
-        "spike_in": "S",
+        "discarded": "D",
     }[group]
     output_first: FastqRecord = (
         annotate_header(barcode_record[0], barcode1, barcode2, class_code),
@@ -672,7 +672,7 @@ def run_chunk_worker(
                         f"watson={counts['watson_pairs']} "
                         f"crick={counts['crick_pairs']} "
                         f"ambiguous={counts['ambiguous_pairs']} "
-                        f"spike-in={counts['spike_in_pairs']} "
+                        f"discarded={counts['discarded_pairs']} "
                         f"speed={speed:.0f} reads/s",
                         flush=True,
                     )
@@ -694,15 +694,15 @@ def run_chunk_worker(
 
     total = counts["input_pairs"]
     informative = counts["watson_pairs"] + counts["crick_pairs"]
-    kept = total - counts["spike_in_pairs"]
+    kept = total - counts["discarded_pairs"]
     row = {
         "chunk": f"{chunk_index:04d}",
         "total_reads": total,
         "kept_reads": kept,
-        "spike_in_reads": counts["spike_in_pairs"],
+        "discarded_reads": counts["discarded_pairs"],
         "kept_fraction": kept / total if total else 0.0,
         "reject_counts": {
-            name: group_reason_counts["spike_in"][name]
+            name: group_reason_counts["discarded"][name]
             for name in REJECT_NAMES
         },
         "watson_reads": counts["watson_pairs"],
@@ -724,8 +724,8 @@ def run_chunk_worker(
         "output_r2_crick": paths["crick_genomic"].name,
         "output_r1_ambiguous": paths["ambiguous_first"].name,
         "output_r2_ambiguous": paths["ambiguous_genomic"].name,
-        "output_r1_spike_in": paths["spike_in_first"].name,
-        "output_r2_spike_in": paths["spike_in_genomic"].name,
+        "output_r1_discarded": paths["discarded_first"].name,
+        "output_r2_discarded": paths["discarded_genomic"].name,
         "stats": paths["stats"].name,
     }
     paths["stats"].write_text(json.dumps(row, indent=2), encoding="utf-8")
@@ -915,7 +915,7 @@ def main(argv: list[str] | None = None) -> int:
             f"input={input_pairs}, grouped={classified_pairs}"
         )
     informative = total_counts["watson_pairs"] + total_counts["crick_pairs"]
-    kept = input_pairs - total_counts["spike_in_pairs"]
+    kept = input_pairs - total_counts["discarded_pairs"]
     stats = {
         "mode": "smc",
         "input_r1": Path(args.barcode_fastq).name,
@@ -928,7 +928,7 @@ def main(argv: list[str] | None = None) -> int:
         "chunks": chunk_rows,
         "total_reads": input_pairs,
         "kept_reads": kept,
-        "spike_in_reads": total_counts["spike_in_pairs"],
+        "discarded_reads": total_counts["discarded_pairs"],
         "kept_fraction": kept / input_pairs if input_pairs else 0.0,
         "reject_counts": {
             name: sum(
@@ -972,7 +972,7 @@ def main(argv: list[str] | None = None) -> int:
         f"watson={total_counts['watson_pairs']} "
         f"crick={total_counts['crick_pairs']} "
         f"ambiguous={total_counts['ambiguous_pairs']} "
-        f"spike-in={total_counts['spike_in_pairs']} "
+        f"discarded={total_counts['discarded_pairs']} "
         f"avg-speed={input_pairs / elapsed:.1f} reads/s"
     )
     return 0

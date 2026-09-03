@@ -74,7 +74,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--work-dir", required=True, help="Path to the dbitm directory.")
     parser.add_argument(
         "--assay",
-        choices=("taps", "taps-v2", "emseq", "cabernet"),
+        choices=("taps", "taps-v2", "emseq", "cabernet", "smc"),
         help="Assay type used to interpret spatial barcodes. Default: taps.",
     )
     parser.add_argument("--output-dir")

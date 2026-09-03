@@ -55,7 +55,7 @@ if (( $# == 3 )); then
     dry_run=true
 fi
 case "$assay" in
-    taps|taps-v2|emseq|cabernet) ;;
+    taps|taps-v2|emseq|cabernet|smc) ;;
     *) echo "[dbitm] call: unsupported assay: $assay" >&2; exit 1 ;;
 esac
 if [[ ! -d "$raw_path" ]]; then
@@ -109,7 +109,11 @@ if [[ "$reference" != /* ]]; then
 fi
 reference=$(realpath -m "$reference")
 
-barcode_whitelist=${BARCODE_WHITELIST:-$REPO_DIR/docs/barcodes/barcodes50.tsv}
+if [[ "$assay" == smc ]]; then
+    barcode_whitelist=${SMC_BARCODE_WHITELIST:-$REPO_DIR/docs/barcodes/barcodes-smc.tsv}
+else
+    barcode_whitelist=${BARCODE_WHITELIST:-$REPO_DIR/docs/barcodes/barcodes50.tsv}
+fi
 if [[ "$barcode_whitelist" != /* ]]; then
     barcode_whitelist=$REPO_DIR/$barcode_whitelist
 fi

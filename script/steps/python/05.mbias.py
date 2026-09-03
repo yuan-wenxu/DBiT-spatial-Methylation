@@ -29,14 +29,13 @@ MbiasCounts = DefaultDict[Tuple[str, int], list[int]]
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Calculate aggregate CG M-bias for TAPS/TAPS-v2, EM-seq, or "
-            "Cabernet from "
-            "a pooled coordinate-sorted BAM."
+            "Calculate aggregate CG M-bias for TAPS/TAPS-v2, EM-seq, "
+            "Cabernet, or SmC from a pooled coordinate-sorted BAM."
         )
     )
     parser.add_argument(
         "--assay",
-        choices=("taps", "taps-v2", "emseq", "cabernet"),
+        choices=("taps", "taps-v2", "emseq", "cabernet", "smc"),
         required=True,
     )
     parser.add_argument("--bam", required=True, help="Input pooled BAM.")
@@ -306,7 +305,7 @@ def count_mbias(
             for query_pos, ref_pos in record.get_aligned_pairs(matches_only=False):
                 if query_pos is None or ref_pos is None:
                     continue
-                if args.assay in {"emseq", "cabernet"}:
+                if args.assay in {"emseq", "cabernet", "smc"}:
                     observation = classify_emseq(
                         record,
                         query_pos,
