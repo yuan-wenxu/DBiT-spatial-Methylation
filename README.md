@@ -96,8 +96,10 @@ SMC_BARCODE_WHITELIST=       # empty uses docs/barcodes/barcodes-smc.tsv
 CALL_CONTEXT_MODE=both       # cg, ch, or both
 ```
 
-Set `SCRATCH_ROOT` to a directory on a fast SSD. Adjust the SLURM CPU, memory,
-time, and partition settings near the end of the configuration file.
+Set `SCRATCH_ROOT` to a directory on a fast SSD when local scratch is desired
+for `barcode`, `pool`, `call`, and `methscan`. Other stages always read and
+write the persistent sample directory. Adjust the SLURM CPU, memory, time, and
+partition settings near the end of the configuration file.
 
 ## Usage
 

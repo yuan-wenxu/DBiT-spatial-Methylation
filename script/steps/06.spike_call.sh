@@ -1,30 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cleanup_scratch() {
-    local status=$?
-    trap - EXIT INT TERM HUP
-    if [[ ${use_scratch:-false} == true && -n ${scratch_run:-} && -d $scratch_run ]]; then
-        if (( status != 0 )) && [[ -n ${run_output:-} && -d $run_output && -n ${output_dir:-} ]]; then
-            echo "[dbitm] spike-call: recovering scratch results after exit status $status: $output_dir" >&2
-            if mkdir -p "$output_dir" && cp -a "$run_output/." "$output_dir/"; then
-                echo "[dbitm] spike-call: scratch results recovered: $output_dir" >&2
-            else
-                echo "[dbitm] spike-call: warning: failed to recover scratch results: $run_output" >&2
-            fi
-        fi
-        rm -rf -- "$scratch_run" || echo "[dbitm] spike-call: warning: failed to clean scratch directory: $scratch_run" >&2
-    fi
-    exit "$status"
-}
-
-enable_cleanup() {
-    trap cleanup_scratch EXIT
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
-    trap 'exit 129' HUP
-}
-
 if (( $# < 2 || $# > 3 )); then
     echo "Usage: 06.spike_call.sh <assay> <raw_fastq_folder> [--dry-run]" >&2
     exit 1
@@ -115,22 +91,7 @@ find_bam_index() {
     return 1
 }
 
-use_scratch=false
 run_output=$output_dir
-if [[ "$dry_run" == false && -n ${SCRATCH_ROOT:-} ]]; then
-    if [[ "$SCRATCH_ROOT" != /* ]]; then
-        echo "[dbitm] spike-call: SCRATCH_ROOT must be an absolute path or empty" >&2
-        exit 1
-    fi
-    scratch_root=$(realpath -m "$SCRATCH_ROOT")
-    run_id=${SLURM_JOB_ID:-spike_call_$$}
-    scratch_run=$scratch_root/dbitm/$run_id
-    scratch_input=$scratch_run/input
-    run_output=$scratch_run/coverage
-    use_scratch=true
-    enable_cleanup
-    mkdir -p "$scratch_input" "$run_output"
-fi
 
 target_count=0
 log_path=$run_output/spike_call.log
@@ -146,7 +107,7 @@ run_target() {
     local chromosomes=$4
     local cutoff_name=$5
     local cutoff_path=$cutoff_dir/$cutoff_name.mbias.cutoffs.tsv
-    local trims r1_left r1_right r2_left r2_right bam_index
+    local trims r1_left r1_right r2_left r2_right
     local run_bam=$bam_path
     local run_reference=$reference_path
 
@@ -171,7 +132,7 @@ run_target() {
         echo "[dbitm] spike-call: pooled BAM not found ($output_name): $bam_path" >&2
         return 1
     fi
-    if ! bam_index=$(find_bam_index "$bam_path"); then
+    if ! find_bam_index "$bam_path" > /dev/null; then
         echo "[dbitm] spike-call: BAM index not found ($output_name): $bam_path" >&2
         return 1
     fi
@@ -191,20 +152,6 @@ run_target() {
             return 1
         fi
         IFS=$'\t' read -r r1_left r1_right r2_left r2_right <<< "$trims"
-    fi
-
-    if [[ "$use_scratch" == true ]]; then
-        local target_input=$scratch_input/$output_name
-        mkdir -p "$target_input"
-        run_bam=$target_input/input.bam
-        run_reference=$target_input/reference.fa
-        cp -L -- "$bam_path" "$run_bam"
-        case "$bam_index" in
-            *.csi) cp -L -- "$bam_index" "$run_bam.csi" ;;
-            *) cp -L -- "$bam_index" "$run_bam.bai" ;;
-        esac
-        cp -L -- "$reference_path" "$run_reference"
-        cp -L -- "$reference_path.fai" "$run_reference.fai"
     fi
 
     echo "[dbitm] spike-call target: $output_name"
@@ -289,16 +236,11 @@ if (( target_count == 0 )); then
 fi
 
 if [[ "$dry_run" == true ]]; then
-    [[ -z ${SCRATCH_ROOT:-} ]] || echo "[dbitm] planned scratch root: $SCRATCH_ROOT"
     echo "[dbitm] dry-run: no files will be written"
     echo "====== dbitm spike-call dry-run finished ======"
     exit 0
 fi
 
-if [[ "$use_scratch" == true ]]; then
-    mkdir -p "$output_dir"
-    cp -a "$run_output/." "$output_dir/"
-fi
 echo "[dbitm] spike-call targets: $target_count"
 echo "[dbitm] spike-call log: $output_dir/spike_call.log"
 echo "====== dbitm spike-call finished ======"

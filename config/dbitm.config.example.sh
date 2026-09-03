@@ -1,7 +1,8 @@
 # execution mode: local (run directly) or hpc (submit via sbatch)
 RUN_MODE=${RUN_MODE:-hpc}
 
-# reference configuration
+# Reference configuration. SCRATCH_ROOT is used only by barcode, pool, call,
+# and methscan; all other stages read and write the persistent sample directory.
 SCRATCH_ROOT=${SCRATCH_ROOT:-}
 # TAPS/TAPS-v2 bwa index prefix or indexed reference FASTA
 BWA_INDEX=${BWA_INDEX:-}

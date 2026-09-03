@@ -354,7 +354,12 @@ dbitm/
 
 Exact files depend on assay and configuration.
 
-When `SCRATCH_ROOT` is set, stages create isolated workspaces, stage required
-inputs, and copy results back to the sample directory. Handled failures attempt
-to recover partial stage output before removing scratch data. Recovered output
-may be incomplete and should be inspected before rerunning.
+When `SCRATCH_ROOT` is set, only `barcode`, `pool`, `call`, and `methscan`
+create isolated scratch workspaces and copy their results back to the sample
+directory. These stages have substantial intermediate or random I/O. `fastp`,
+`align`, `spike-align`, `mbias`, `spike-call`, `saturation`, and `summary`
+always use the persistent sample directory so long-running or completed
+outputs are not held only on ephemeral storage. Handled failures in the four
+scratch-enabled stages attempt to recover partial output before removing their
+scratch workspace; recovered output may be incomplete and should be inspected
+before rerunning.

@@ -1,30 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cleanup_scratch() {
-    local status=$?
-    trap - EXIT INT TERM HUP
-    if [[ ${use_scratch:-false} == true && -n ${scratch_run:-} && -d $scratch_run ]]; then
-        if (( status != 0 )) && [[ -n ${run_output:-} && -d $run_output && -n ${output_dir:-} ]]; then
-            echo "[dbitm] summary: recovering scratch results after exit status $status: $output_dir" >&2
-            if mkdir -p "$output_dir" && cp -a "$run_output/." "$output_dir/"; then
-                echo "[dbitm] summary: scratch results recovered: $output_dir" >&2
-            else
-                echo "[dbitm] summary: warning: failed to recover scratch results: $run_output" >&2
-            fi
-        fi
-        rm -rf -- "$scratch_run" || echo "[dbitm] summary: warning: failed to clean scratch directory: $scratch_run" >&2
-    fi
-    exit "$status"
-}
-
-enable_cleanup() {
-    trap cleanup_scratch EXIT
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
-    trap 'exit 129' HUP
-}
-
 if (( $# < 2 || $# > 3 )); then
     echo "Usage: 08.summary.sh <assay> <raw_fastq_folder> [--dry-run]" >&2
     exit 1
@@ -118,34 +94,16 @@ echo "[dbitm] spike-ins: ${spike_names[*]:-none}"
 echo "[dbitm] config: $config_file"
 
 if [[ "$dry_run" == true ]]; then
-    if [[ -n ${SCRATCH_ROOT:-} && "$SCRATCH_ROOT" != /* ]]; then
-        echo "[dbitm] summary: SCRATCH_ROOT must be an absolute path or empty" >&2
-        exit 1
-    fi
     pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default \
         python "$summary_script" "${summary_args[@]}" \
         --output-dir "$output_dir" \
         --dry-run
-    [[ -z ${SCRATCH_ROOT:-} ]] || echo "[dbitm] planned scratch root: $SCRATCH_ROOT"
     echo "[dbitm] dry-run: no files will be written"
     echo "====== dbitm summary dry-run finished ======"
     exit 0
 fi
 
-use_scratch=false
 run_output=$output_dir
-if [[ -n ${SCRATCH_ROOT:-} ]]; then
-    if [[ "$SCRATCH_ROOT" != /* ]]; then
-        echo "[dbitm] summary: SCRATCH_ROOT must be an absolute path or empty" >&2
-        exit 1
-    fi
-    scratch_root=$(realpath -m "$SCRATCH_ROOT")
-    run_id=${SLURM_JOB_ID:-summary_$$}
-    scratch_run=$scratch_root/dbitm/$run_id
-    run_output=$scratch_run/summary
-    use_scratch=true
-    enable_cleanup
-fi
 mkdir -p "$run_output"
 
 pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default \
@@ -153,9 +111,5 @@ pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default \
     --output-dir "$run_output" \
     2>&1 | tee "$run_output/summary.log"
 
-if [[ "$use_scratch" == true ]]; then
-    mkdir -p "$output_dir"
-    cp -a "$run_output/." "$output_dir/"
-fi
 echo "[dbitm] summary result: $output_dir"
 echo "====== dbitm summary finished ======"

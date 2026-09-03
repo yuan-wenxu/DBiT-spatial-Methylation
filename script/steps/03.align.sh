@@ -1,30 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cleanup_scratch() {
-    local status=$?
-    trap - EXIT INT TERM HUP
-    if [[ ${use_scratch:-false} == true && -n ${scratch_run:-} && -d $scratch_run ]]; then
-        if (( status != 0 )) && [[ -n ${run_output:-} && -d $run_output && -n ${final_dir:-} ]]; then
-            echo "[dbitm] align: recovering scratch results after exit status $status: $final_dir/align" >&2
-            if mkdir -p "$final_dir/align" && cp -a "$run_output/." "$final_dir/align/"; then
-                echo "[dbitm] align: scratch results recovered: $final_dir/align" >&2
-            else
-                echo "[dbitm] align: warning: failed to recover scratch results: $run_output" >&2
-            fi
-        fi
-        rm -rf -- "$scratch_run" || echo "[dbitm] align: warning: failed to clean scratch directory: $scratch_run" >&2
-    fi
-    exit "$status"
-}
-
-enable_cleanup() {
-    trap cleanup_scratch EXIT
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
-    trap 'exit 129' HUP
-}
-
 if (( $# < 2 || $# > 3 )); then
     echo "Usage: 03.align.sh <assay> <raw_fastq_folder> [--dry-run]" >&2
     exit 1
@@ -129,7 +105,6 @@ if [[ ! -d "$barcode_dir" ]]; then
     fi
 fi
 
-use_scratch=false
 run_input=$barcode_dir
 run_output=$final_dir/align
 
@@ -145,10 +120,6 @@ fi
 echo "[dbitm] output directory: $final_dir/align"
 
 if [[ "$dry_run" == true ]]; then
-    if [[ -n ${SCRATCH_ROOT:-} && "$SCRATCH_ROOT" != /* ]]; then
-        echo "[dbitm] align: SCRATCH_ROOT must be an absolute path or empty" >&2
-        exit 1
-    fi
     declare -a dry_chunk_files=()
     if [[ -d "$barcode_dir" ]]; then
         shopt -s nullglob
@@ -170,49 +141,11 @@ if [[ "$dry_run" == true ]]; then
         echo "[dbitm] expected input: $barcode_dir/*.R1.demux.fastq.gz"
     fi
     echo "[dbitm] planned command: $aligner + sinto nametotag -> $final_dir/align"
-    [[ -z ${SCRATCH_ROOT:-} ]] || echo "[dbitm] planned scratch root: $SCRATCH_ROOT"
     echo "====== dbitm align dry-run finished ======"
     exit 0
 fi
 
-if [[ -n ${SCRATCH_ROOT:-} ]]; then
-    if [[ "$SCRATCH_ROOT" != /* ]]; then
-        echo "[dbitm] align: SCRATCH_ROOT must be an absolute path or empty" >&2
-        exit 1
-    fi
-    echo "[dbitm] scratch root: $SCRATCH_ROOT"
-    mkdir -p "$SCRATCH_ROOT"
-    scratch_root=$(realpath "$SCRATCH_ROOT")
-    run_id=${SLURM_JOB_ID:-align_$$}
-    scratch_run=$scratch_root/dbitm/$run_id
-    run_input=$scratch_run/barcode
-    run_output=$scratch_run/align
-    use_scratch=true
-    enable_cleanup
-    mkdir -p "$run_input"
-    shopt -s nullglob
-    if [[ "$assay" == smc ]]; then
-        scratch_fastq_files=(
-            "$barcode_dir"/*.watson.short-genomic.fastq.gz
-            "$barcode_dir"/*.watson.genomic.fastq.gz
-            "$barcode_dir"/*.crick.short-genomic.fastq.gz
-            "$barcode_dir"/*.crick.genomic.fastq.gz
-        )
-    else
-        scratch_fastq_files=(
-            "$barcode_dir"/*.R1.demux.fastq.gz
-            "$barcode_dir"/*.R2.demux.fastq.gz
-        )
-    fi
-    shopt -u nullglob
-    echo "[dbitm] copying ${#scratch_fastq_files[@]} host FASTQ files to scratch: $run_input"
-    if (( ${#scratch_fastq_files[@]} > 0 )); then
-        cp -a "${scratch_fastq_files[@]}" "$run_input"/
-    fi
-else
-    mkdir -p "$final_dir"
-fi
-
+mkdir -p "$final_dir"
 rm -rf -- "$run_output"
 mkdir -p "$run_output/logs"
 align_log=$run_output/align.log
@@ -370,12 +303,6 @@ if [[ "$alignment_failed" == true ]]; then
     exit 1
 fi
 
-if [[ "$use_scratch" == true ]]; then
-    rm -rf -- "$final_dir/align"
-    mkdir -p "$final_dir"
-    echo "[dbitm] copying alignment result from scratch to $final_dir/align"
-    cp -a "$run_output" "$final_dir/align"
-fi
 echo "[dbitm] align log: $final_dir/align/align.log"
 echo "[dbitm] align result: $final_dir/align"
 echo "====== dbitm align finished ======"

@@ -1,30 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cleanup_scratch() {
-    local status=$?
-    trap - EXIT INT TERM HUP
-    if [[ ${use_scratch:-false} == true && -n ${scratch_run:-} && -d $scratch_run ]]; then
-        if (( status != 0 )) && [[ -n ${run_output:-} && -d $run_output && -n ${output_dir:-} ]]; then
-            echo "[dbitm] mbias: recovering scratch results after exit status $status: $output_dir" >&2
-            if mkdir -p "$output_dir" && cp -a "$run_output/." "$output_dir/"; then
-                echo "[dbitm] mbias: scratch results recovered: $output_dir" >&2
-            else
-                echo "[dbitm] mbias: warning: failed to recover scratch results: $run_output" >&2
-            fi
-        fi
-        rm -rf -- "$scratch_run" || echo "[dbitm] mbias: warning: failed to clean scratch directory: $scratch_run" >&2
-    fi
-    exit "$status"
-}
-
-enable_cleanup() {
-    trap cleanup_scratch EXIT
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
-    trap 'exit 129' HUP
-}
-
 if (( $# < 2 || $# > 3 )); then
     echo "Usage: 05.mbias.sh <assay> <raw_fastq_folder> [--dry-run]" >&2
     exit 1
@@ -127,35 +103,8 @@ echo "[dbitm] output directory: $output_dir"
 echo "[dbitm] host M-bias chromosomes: ${CALL_CHROMOSOMES:-all}"
 echo "[dbitm] config: $config_file"
 
-use_scratch=false
 log_path=/dev/null
-if [[ "$dry_run" == true ]]; then
-    if [[ -n ${SCRATCH_ROOT:-} && "$SCRATCH_ROOT" != /* ]]; then
-        echo "[dbitm] mbias: SCRATCH_ROOT must be an absolute path or empty" >&2
-        exit 1
-    fi
-else
-    if [[ -n ${SCRATCH_ROOT:-} ]]; then
-        if [[ "$SCRATCH_ROOT" != /* ]]; then
-            echo "[dbitm] mbias: SCRATCH_ROOT must be an absolute path or empty" >&2
-            exit 1
-        fi
-        echo "[dbitm] scratch root: $SCRATCH_ROOT"
-        mkdir -p "$SCRATCH_ROOT"
-        scratch_root=$(realpath "$SCRATCH_ROOT")
-        run_id=${SLURM_JOB_ID:-mbias_$$}
-        scratch_run=$scratch_root/dbitm/$run_id
-        scratch_input=$scratch_run/pooled
-        scratch_references=$scratch_run/references
-        run_output=$scratch_run/mbias
-        use_scratch=true
-        enable_cleanup
-        mkdir -p "$scratch_input" "$scratch_references" "$run_output"
-        if [[ -d "$output_dir" ]]; then
-            echo "[dbitm] copying existing M-bias outputs to scratch: $run_output"
-            cp -a "$output_dir/." "$run_output/"
-        fi
-    fi
+if [[ "$dry_run" == false ]]; then
     mkdir -p "$run_output"
     log_path=$run_output/mbias.log
     : > "$log_path"
@@ -176,10 +125,6 @@ infer_target_cutoffs() {
         --r1-original-length "$MBIAS_R1_ORIGINAL_LENGTH" \
         --rate-tolerance "$MBIAS_CUTOFF_RATE_TOLERANCE" \
         >> "$log_path" 2>&1; then
-        if [[ "$use_scratch" == true ]]; then
-            mkdir -p "$output_dir"
-            cp -a "$log_path" "$output_dir/mbias.log" || true
-        fi
         echo "[dbitm] mbias: cutoff inference failed; see log: $output_dir/mbias.log" >&2
         return 1
     fi
@@ -208,7 +153,6 @@ run_mbias_target() {
     if [[ -n "$chromosomes" ]]; then
         chrom_args=(--chromosomes "$chromosomes")
     fi
-    local scratch_bam scratch_reference
     local target_tsv=$run_output/$label.mbias.tsv
     local target_png=$run_output/$label.mbias.png
 
@@ -241,28 +185,6 @@ run_mbias_target() {
         echo "[dbitm] mbias: partial output exists for $label under: $run_output" >&2
         return 1
     fi
-    if [[ "$use_scratch" == true ]]; then
-        scratch_bam=$scratch_input/$(basename "$bam_path")
-        scratch_reference=$scratch_references/$label.fa
-        echo "[dbitm] copying pooled BAM to scratch ($label): $scratch_bam"
-        cp -L -- "$bam_path" "$scratch_bam"
-        if [[ -n "$chromosomes" ]]; then
-            local scratch_bam_index
-            if ! scratch_bam_index=$(find_bam_index "$bam_path"); then
-                echo "[dbitm] mbias: BAM index not found ($label): $bam_path" >&2
-                exit 1
-            fi
-            case "$scratch_bam_index" in
-                *.csi) cp -L -- "$scratch_bam_index" "$scratch_bam.csi" ;;
-                *) cp -L -- "$scratch_bam_index" "$scratch_bam.bai" ;;
-            esac
-        fi
-        echo "[dbitm] copying reference FASTA + index to scratch ($label): $scratch_reference"
-        cp -L -- "$reference_path" "$scratch_reference"
-        cp -L -- "$reference_path.fai" "$scratch_reference.fai"
-        bam_path=$scratch_bam
-        reference_path=$scratch_reference
-    fi
     echo "[dbitm] mbias target: $label"
     if ! pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default \
         python "$python_script" \
@@ -281,10 +203,6 @@ run_mbias_target() {
         --min-mapping-quality "$MBIAS_MIN_MAPPING_QUALITY" \
         "${chrom_args[@]}" \
         >> "$log_path" 2>&1; then
-        if [[ "$use_scratch" == true ]]; then
-            mkdir -p "$output_dir"
-            cp -a "$log_path" "$output_dir/mbias.log" || true
-        fi
         echo "[dbitm] mbias: target failed ($label); see log: $output_dir/mbias.log" >&2
         return 1
     fi
@@ -342,16 +260,9 @@ if (( target_count == 0 )); then
     exit 1
 fi
 
-if [[ "$use_scratch" == true ]]; then
-    mkdir -p "$output_dir"
-    echo "[dbitm] copying M-bias result from scratch to $output_dir"
-    cp -a "$run_output/." "$output_dir/"
-fi
-
 echo "[dbitm] mbias targets completed: $target_count"
 if [[ "$dry_run" == true ]]; then
     echo "[dbitm] dry-run: no files will be written"
-    [[ -z ${SCRATCH_ROOT:-} ]] || echo "[dbitm] planned scratch root: $SCRATCH_ROOT"
     echo "====== dbitm mbias dry-run finished ======"
 else
     echo "[dbitm] mbias log: $output_dir/mbias.log"
