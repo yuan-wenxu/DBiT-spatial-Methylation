@@ -57,7 +57,7 @@ SMC_MAX_CONVERSION_MISMATCHES=${SMC_MAX_CONVERSION_MISMATCHES:-4}
 SMC_MINIMUM_SCORE_MARGIN=${SMC_MINIMUM_SCORE_MARGIN:-3}
 
 # genome alignment configuration
-# aligner threads used by each barcode chunk
+# aligner threads used by each independent alignment task
 ALIGN_THREADS_PER_CHUNK=${ALIGN_THREADS_PER_CHUNK:-8}
 # aligner threads used by each spike-in FASTQ chunk
 SPIKE_ALIGN_THREADS_PER_CHUNK=${SPIKE_ALIGN_THREADS_PER_CHUNK:-8}
