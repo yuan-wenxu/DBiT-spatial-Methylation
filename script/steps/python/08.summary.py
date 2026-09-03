@@ -213,7 +213,12 @@ def load_spot_manifest(
 
 
 def is_unique_mapped(record: pysam.AlignedSegment, minimum_mapq: int) -> bool:
-    if record.is_unmapped or record.mapping_quality < minimum_mapq:
+    if (
+        record.is_unmapped
+        or record.is_secondary
+        or record.is_supplementary
+        or record.mapping_quality < minimum_mapq
+    ):
         return False
     try:
         nh = record.get_tag("NH")
@@ -239,9 +244,10 @@ def count_host_metrics(
                 cb_value = str(record.get_tag(cb_tag)).upper()
             except KeyError:
                 cb_value = ""
-            spot = cb_to_spot.get(cb_value)
-            if spot is not None:
-                spot_counts[spot] += 1
+            if not record.is_secondary and not record.is_supplementary:
+                spot = cb_to_spot.get(cb_value)
+                if spot is not None:
+                    spot_counts[spot] += 1
             if not is_unique_mapped(record, minimum_mapq):
                 continue
             mapped_reads += 1

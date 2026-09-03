@@ -91,7 +91,36 @@ if (( ${#cb_bams[@]} == 0 )); then
     fi
 fi
 
-declare -a spike_names=(lambda puc19)
+case "$assay" in
+    taps|taps-v2) spike_index_variable=BWA_SPIKE_IN_INDEXES ;;
+    emseq|cabernet|smc) spike_index_variable=BISCUIT_SPIKE_IN_INDEXES ;;
+esac
+declare -a spike_names=()
+spike_index_declaration=$(declare -p "$spike_index_variable" 2>/dev/null || true)
+if [[ -n "$spike_index_declaration" ]]; then
+    if [[ "$spike_index_declaration" != "declare -A "* ]]; then
+        echo "[dbitm] pool: $spike_index_variable must be defined with declare -A" >&2
+        exit 1
+    fi
+    declare -n configured_spike_indexes=$spike_index_variable
+    declare -a configured_spike_names=()
+    if (( ${#configured_spike_indexes[@]} > 0 )); then
+        mapfile -t configured_spike_names < <(
+            printf '%s\n' "${!configured_spike_indexes[@]}" | LC_ALL=C sort
+        )
+    fi
+    for spike_name in "${configured_spike_names[@]}"; do
+        spike_index=${configured_spike_indexes[$spike_name]}
+        spike_index=${spike_index#"${spike_index%%[![:space:]]*}"}
+        spike_index=${spike_index%"${spike_index##*[![:space:]]}"}
+        [[ -n "$spike_index" ]] || continue
+        if [[ ! "$spike_name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            echo "[dbitm] pool: invalid spike-in name: $spike_name" >&2
+            exit 1
+        fi
+        spike_names+=("$spike_name")
+    done
+fi
 declare -a source_spike_bams=()
 shopt -s nullglob
 for spike_name in "${spike_names[@]}"; do

@@ -182,6 +182,10 @@ declare -a r1_files=()
 declare -a r2_files=()
 declare -a chunk_logs=()
 if [[ "$assay" == smc ]]; then
+    declare -a crick_chunks=()
+    declare -a crick_r1_files=()
+    declare -a crick_r2_files=()
+    declare -a crick_chunk_logs=()
     shopt -s nullglob
     watson_short_files=("$run_input"/*.watson.short-genomic.fastq.gz)
     shopt -u nullglob
@@ -202,14 +206,20 @@ if [[ "$assay" == smc ]]; then
                 exit 1
             fi
         done
-        chunks+=("$chunk.watson" "$chunk.crick")
-        r1_files+=("$watson_long" "$crick_short")
-        r2_files+=("$watson_short" "$crick_long")
-        chunk_logs+=(
-            "$run_output/logs/$chunk.watson.log"
-            "$run_output/logs/$chunk.crick.log"
-        )
+        chunks+=("$chunk.watson")
+        r1_files+=("$watson_long")
+        r2_files+=("$watson_short")
+        chunk_logs+=("$run_output/logs/$chunk.watson.log")
+
+        crick_chunks+=("$chunk.crick")
+        crick_r1_files+=("$crick_short")
+        crick_r2_files+=("$crick_long")
+        crick_chunk_logs+=("$run_output/logs/$chunk.crick.log")
     done
+    chunks+=("${crick_chunks[@]}")
+    r1_files+=("${crick_r1_files[@]}")
+    r2_files+=("${crick_r2_files[@]}")
+    chunk_logs+=("${crick_chunk_logs[@]}")
 else
     shopt -s nullglob
     r1_files=("$run_input"/*.R1.spike-in.fastq.gz)
@@ -292,39 +302,40 @@ align_spike_chunk() {
     echo "[dbitm] spike-in chunk finished: $chunk"
 }
 
-declare -a active_pids=()
-declare -a active_chunks=()
+scheduler_dir=$run_output/.scheduler.$$
+mkdir "$scheduler_dir"
+declare -a worker_pids=()
 alignment_failed=false
 
-wait_for_active_jobs() {
-    local job_index
-    for job_index in "${!active_pids[@]}"; do
-        if ! wait "${active_pids[$job_index]}"; then
-            echo "[dbitm] spike-align: chunk failed: ${active_chunks[$job_index]}" >&2
-            alignment_failed=true
+align_spike_worker() {
+    local chunk_index chunk_name
+    for chunk_index in "${!chunks[@]}"; do
+        # mkdir is the atomic claim operation shared by all worker processes.
+        # A worker that finishes early immediately claims the next task.
+        if ! mkdir "$scheduler_dir/$chunk_index" 2>/dev/null; then
+            continue
         fi
+        chunk_name=${chunks[$chunk_index]}
+        trap 'job_status=$?; if (( job_status != 0 )); then echo "[dbitm] spike-align: chunk failed: $chunk_name" >&2; fi' EXIT
+        align_spike_chunk \
+            "$chunk_name" \
+            "${r1_files[$chunk_index]}" \
+            "${r2_files[$chunk_index]}" \
+            "${chunk_logs[$chunk_index]}"
+        trap - EXIT
     done
-    active_pids=()
-    active_chunks=()
 }
 
-for chunk_index in "${!chunks[@]}"; do
-    align_spike_chunk \
-        "${chunks[$chunk_index]}" \
-        "${r1_files[$chunk_index]}" \
-        "${r2_files[$chunk_index]}" \
-        "${chunk_logs[$chunk_index]}" &
-    active_pids+=("$!")
-    active_chunks+=("${chunks[$chunk_index]}")
-
-    if (( ${#active_pids[@]} == parallel_jobs )); then
-        wait_for_active_jobs
-        [[ "$alignment_failed" == false ]] || break
+for ((worker_index = 0; worker_index < parallel_jobs; worker_index++)); do
+    align_spike_worker &
+    worker_pids+=("$!")
+done
+for worker_pid in "${worker_pids[@]}"; do
+    if ! wait "$worker_pid"; then
+        alignment_failed=true
     fi
 done
-if (( ${#active_pids[@]} > 0 )); then
-    wait_for_active_jobs
-fi
+rm -rf -- "$scheduler_dir"
 
 for chunk_log in "${chunk_logs[@]}"; do
     if [[ -f "$chunk_log" ]]; then

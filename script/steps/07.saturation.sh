@@ -45,12 +45,14 @@ fi
 
 declare -a saturation_args=(
     --work-dir "$final_dir"
+    --assay "$assay"
     --reads-threshold "$SATURATION_READS_THRESHOLD"
     --pred-fraction "$SATURATION_PRED_FRACTION"
     --linear-r2-threshold "$SATURATION_LINEAR_R2_THRESHOLD"
 )
 
 echo "====== dbitm saturation ======"
+echo "[dbitm] assay: $assay"
 echo "[dbitm] work directory: $final_dir"
 echo "[dbitm] output directory: $output_dir"
 echo "[dbitm] reads threshold: $SATURATION_READS_THRESHOLD"

@@ -238,8 +238,8 @@ dbitm/pooled/
 └── pool.log
 ```
 
-`POOL_SORT_MEM` is memory per SAMtools sort thread. The current pool stage
-enumerates `lambda` and `puc19` for spike-ins.
+`POOL_SORT_MEM` is memory per SAMtools sort thread. Spike-in names are read
+from the assay-specific configured alignment-index array.
 
 ### 4.5 M-bias
 
@@ -289,6 +289,9 @@ dbitm/saturation/
 ├── saturation_summary.tsv
 └── saturation.log
 ```
+
+The summary records the configured multiplier in `prediction_fraction` and
+the corresponding estimate in `predicted_median_unique_cpgs`.
 
 ### 4.8 Summary
 

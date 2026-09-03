@@ -48,6 +48,12 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         description="Estimate host CpG saturation across spatial spots."
     )
     parser.add_argument("--work-dir", required=True, help="Path to the dbitm directory.")
+    parser.add_argument(
+        "--assay",
+        choices=("taps", "taps-v2", "emseq", "cabernet", "smc"),
+        default="taps",
+        help="Assay type used to interpret spatial barcodes. Default: taps.",
+    )
     parser.add_argument("--output-dir")
     parser.add_argument("--cb-tag", default="CB")
     parser.add_argument("--reads-threshold", type=float, default=10_000.0)
@@ -79,7 +85,7 @@ def format_optional_float(value: Optional[float]) -> str:
     return f"{value:.6f}"
 
 
-def load_cb_to_spot(path: Path) -> dict[str, str]:
+def load_cb_to_spot(path: Path, c_to_t: bool = False) -> dict[str, str]:
     if not path.is_file():
         raise FileNotFoundError(f"spot manifest not found: {path}")
     cb_to_spot: dict[str, str] = {}
@@ -93,8 +99,9 @@ def load_cb_to_spot(path: Path) -> dict[str, str]:
             raw_cb = (row.get("raw_cb") or "").strip().upper()
             if not spot or not raw_cb:
                 continue
-            cb_to_spot[raw_cb] = spot
-            cb_to_spot[raw_cb.replace("+", "")] = spot
+            lookup_cb = raw_cb.replace("C", "T") if c_to_t else raw_cb
+            cb_to_spot[lookup_cb] = spot
+            cb_to_spot[lookup_cb.replace("+", "")] = spot
     if not cb_to_spot:
         raise ValueError(f"spot manifest contains no usable entries: {path}")
     return cb_to_spot
@@ -237,7 +244,8 @@ def load_sequencing_gbp(path: Path) -> Optional[float]:
 SUMMARY_FIELDS = [
     "observed_median_unique_cpgs",
     "theoretical_max_median_unique_cpgs",
-    "predicted_median_unique_cpgs_at_2x",
+    "prediction_fraction",
+    "predicted_median_unique_cpgs",
     "saturation_rate",
     "extrapolation_model",
     "hq_spot_count",
@@ -356,11 +364,12 @@ def write_plot(
     save_figure(figure, path)
 
 
-def empty_row(hq_spot_count: int) -> dict[str, str]:
+def empty_row(hq_spot_count: int, prediction_fraction: float) -> dict[str, str]:
     return {
         "observed_median_unique_cpgs": "NA",
         "theoretical_max_median_unique_cpgs": "NA",
-        "predicted_median_unique_cpgs_at_2x": "NA",
+        "prediction_fraction": format_optional_float(prediction_fraction),
+        "predicted_median_unique_cpgs": "NA",
         "saturation_rate": "NA",
         "extrapolation_model": "NA",
         "hq_spot_count": str(hq_spot_count),
@@ -380,6 +389,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         summary_path = output_dir / "saturation_summary.tsv"
         plot_path = output_dir / "saturation_curve.png"
 
+        barcode_c_to_t = args.assay in {"emseq", "cabernet"}
+        print(f"[saturation] assay={args.assay}")
+        print(f"[saturation] barcode-c-to-t={str(barcode_c_to_t).lower()}")
         print(f"[saturation] work-dir={work_dir}")
         print(f"[saturation] host-bam={bam_path}")
         print(f"[saturation] spot-manifest={manifest_path}")
@@ -393,7 +405,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             print("[saturation] dry-run=1")
             return 0
 
-        cb_to_spot = load_cb_to_spot(manifest_path)
+        cb_to_spot = load_cb_to_spot(manifest_path, c_to_t=barcode_c_to_t)
         spot_reads = count_spot_reads(bam_path, args.cb_tag, cb_to_spot)
         hq_candidates = {
             spot
@@ -410,7 +422,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         if not hq_spots:
             print("[saturation] warning=no_hq_spots_after_filter")
-            write_summary(summary_path, empty_row(0))
+            write_summary(summary_path, empty_row(0, args.pred_fraction))
             write_empty_plot(plot_path, "No HQ spots after reads filter")
             print("[saturation] done")
             return 0
@@ -440,7 +452,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         if not fractions:
             print("[saturation] warning=no_coverage_values_for_hq_spots")
-            write_summary(summary_path, empty_row(0))
+            write_summary(summary_path, empty_row(0, args.pred_fraction))
             write_empty_plot(plot_path, "No valid CG coverage rows")
             print("[saturation] done")
             return 0
@@ -496,7 +508,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             {
                 "observed_median_unique_cpgs": format_optional_int(observed),
                 "theoretical_max_median_unique_cpgs": format_optional_int(theoretical),
-                "predicted_median_unique_cpgs_at_2x": format_optional_int(predicted),
+                "prediction_fraction": format_optional_float(args.pred_fraction),
+                "predicted_median_unique_cpgs": format_optional_int(predicted),
                 "saturation_rate": format_optional_float(saturation_rate),
                 "extrapolation_model": model,
                 "hq_spot_count": str(len(usable_spots)),
