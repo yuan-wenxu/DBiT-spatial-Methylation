@@ -221,11 +221,24 @@ if [[ "$MBIAS_MODE" == all || "$MBIAS_MODE" == host ]]; then
         exit 1
     fi
     host_reference=$(resolve_reference "$host_reference")
-    run_mbias_target \
-        host "$pooled_dir/pooled.cb.bam" "$host_reference" \
-        "$MBIAS_HOST_SUBSAMPLE_FRACTION" "$MBIAS_HOST_MAX_RECORDS" \
-        "$CALL_CHROMOSOMES"
-    target_count=$((target_count + 1))
+    if [[ "$assay" == smc ]]; then
+        for conversion_class in watson crick; do
+            run_mbias_target \
+                "host.$conversion_class" \
+                "$pooled_dir/pooled.$conversion_class.cb.bam" \
+                "$host_reference" \
+                "$MBIAS_HOST_SUBSAMPLE_FRACTION" \
+                "$MBIAS_HOST_MAX_RECORDS" \
+                "$CALL_CHROMOSOMES"
+            target_count=$((target_count + 1))
+        done
+    else
+        run_mbias_target \
+            host "$pooled_dir/pooled.cb.bam" "$host_reference" \
+            "$MBIAS_HOST_SUBSAMPLE_FRACTION" "$MBIAS_HOST_MAX_RECORDS" \
+            "$CALL_CHROMOSOMES"
+        target_count=$((target_count + 1))
+    fi
 fi
 
 if [[ "$MBIAS_MODE" == all || "$MBIAS_MODE" == spike ]]; then
@@ -249,9 +262,20 @@ if [[ "$MBIAS_MODE" == all || "$MBIAS_MODE" == spike ]]; then
             continue
         fi
         spike_reference=$(resolve_reference "$spike_reference")
-        run_mbias_target \
-            "$spike_name" "$pooled_dir/pooled.$spike_name.bam" "$spike_reference" 1 0
-        target_count=$((target_count + 1))
+        if [[ "$assay" == smc ]]; then
+            for conversion_class in watson crick; do
+                run_mbias_target \
+                    "$spike_name.$conversion_class" \
+                    "$pooled_dir/pooled.$conversion_class.$spike_name.bam" \
+                    "$spike_reference" 1 0
+                target_count=$((target_count + 1))
+            done
+        else
+            run_mbias_target \
+                "$spike_name" "$pooled_dir/pooled.$spike_name.bam" \
+                "$spike_reference" 1 0
+            target_count=$((target_count + 1))
+        fi
     done
 fi
 

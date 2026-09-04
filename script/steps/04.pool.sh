@@ -80,9 +80,22 @@ if [[ ! -d "$align_dir" ]]; then
 fi
 
 shopt -s nullglob
-cb_bams=("$align_dir"/*.cb.bam)
+if [[ "$assay" == smc ]]; then
+    watson_cb_bams=("$align_dir"/*.watson.cb.bam)
+    crick_cb_bams=("$align_dir"/*.crick.cb.bam)
+    cb_bams=("${watson_cb_bams[@]}" "${crick_cb_bams[@]}")
+else
+    cb_bams=("$align_dir"/*.cb.bam)
+fi
 shopt -u nullglob
-if (( ${#cb_bams[@]} == 0 )); then
+if [[ "$assay" == smc ]] && (( ${#watson_cb_bams[@]} == 0 || ${#crick_cb_bams[@]} == 0 )); then
+    if [[ "$dry_run" == true ]]; then
+        echo "[dbitm] pool: dry-run expects Watson and Crick .cb.bam files under: $align_dir"
+    else
+        echo "[dbitm] pool: both Watson and Crick .cb.bam files are required under: $align_dir" >&2
+        exit 1
+    fi
+elif (( ${#cb_bams[@]} == 0 )); then
     if [[ "$dry_run" == true ]]; then
         echo "[dbitm] pool: dry-run found no existing .cb.bam files under: $align_dir"
     else
@@ -140,6 +153,10 @@ echo "[dbitm] align directory: $align_dir"
 echo "[dbitm] spike-in BAM files found: ${#source_spike_bams[@]}"
 echo "[dbitm] config: $config_file"
 echo "[dbitm] output directory: $final_dir/pooled"
+if [[ "$assay" == smc ]]; then
+    echo "[dbitm] SmC Watson input chunks: ${#watson_cb_bams[@]}"
+    echo "[dbitm] SmC Crick input chunks: ${#crick_cb_bams[@]}"
+fi
 
 if [[ "$dry_run" == true ]]; then
     if [[ -n ${SCRATCH_ROOT:-} && "$SCRATCH_ROOT" != /* ]]; then
@@ -149,6 +166,9 @@ if [[ "$dry_run" == true ]]; then
     echo "[dbitm] dry-run: no files will be written"
     echo "[dbitm] sort memory per thread: $sort_mem"
     echo "[dbitm] planned command: samtools cat/sort/index -> $final_dir/pooled"
+    if [[ "$assay" == smc ]]; then
+        echo "[dbitm] planned SmC host pools: pooled.watson.cb.bam + pooled.crick.cb.bam"
+    fi
     [[ -z ${SCRATCH_ROOT:-} ]] || echo "[dbitm] planned scratch root: $SCRATCH_ROOT"
     echo "====== dbitm pool dry-run finished ======"
     exit 0
@@ -216,16 +236,45 @@ pool_bam_set() {
 }
 
 shopt -s nullglob
-declare -a host_bams=("$run_input"/*.cb.bam)
+if [[ "$assay" == smc ]]; then
+    declare -a host_watson_bams=("$run_input"/*.watson.cb.bam)
+    declare -a host_crick_bams=("$run_input"/*.crick.cb.bam)
+else
+    declare -a host_bams=("$run_input"/*.cb.bam)
+fi
 shopt -u nullglob
-pool_bam_set cb "$pooled_bam" "${host_bams[@]}"
+if [[ "$assay" == smc ]]; then
+    pooled_watson_bam=$run_output/pooled.watson.cb.bam
+    pooled_crick_bam=$run_output/pooled.crick.cb.bam
+    pool_bam_set watson-cb "$pooled_watson_bam" "${host_watson_bams[@]}"
+    pool_bam_set crick-cb "$pooled_crick_bam" "${host_crick_bams[@]}"
+else
+    pool_bam_set cb "$pooled_bam" "${host_bams[@]}"
+fi
 
 for spike_name in "${spike_names[@]}"; do
     shopt -s nullglob
-    spike_bams=("$run_spike_input"/*."$spike_name".bam)
+    if [[ "$assay" == smc ]]; then
+        spike_watson_bams=("$run_spike_input"/*.watson."$spike_name".bam)
+        spike_crick_bams=("$run_spike_input"/*.crick."$spike_name".bam)
+        spike_bams=("${spike_watson_bams[@]}" "${spike_crick_bams[@]}")
+    else
+        spike_bams=("$run_spike_input"/*."$spike_name".bam)
+    fi
     shopt -u nullglob
     if (( ${#spike_bams[@]} > 0 )); then
-        pool_bam_set "$spike_name" "$run_output/pooled.$spike_name.bam" "${spike_bams[@]}"
+        if [[ "$assay" == smc ]]; then
+            if (( ${#spike_watson_bams[@]} == 0 || ${#spike_crick_bams[@]} == 0 )); then
+                echo "[dbitm] pool: both Watson and Crick BAMs are required for spike-in '$spike_name'" >&2
+                exit 1
+            fi
+            pooled_watson_spike=$run_output/pooled.watson.$spike_name.bam
+            pooled_crick_spike=$run_output/pooled.crick.$spike_name.bam
+            pool_bam_set "watson-$spike_name" "$pooled_watson_spike" "${spike_watson_bams[@]}"
+            pool_bam_set "crick-$spike_name" "$pooled_crick_spike" "${spike_crick_bams[@]}"
+        else
+            pool_bam_set "$spike_name" "$run_output/pooled.$spike_name.bam" "${spike_bams[@]}"
+        fi
     fi
 done
 

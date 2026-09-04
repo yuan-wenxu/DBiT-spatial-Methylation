@@ -108,20 +108,21 @@ def load_cb_to_spot(path: Path, c_to_t: bool = False) -> dict[str, str]:
 
 
 def count_spot_reads(
-    bam_path: Path, cb_tag: str, cb_to_spot: dict[str, str]
+    bam_paths: list[Path], cb_tag: str, cb_to_spot: dict[str, str]
 ) -> dict[str, int]:
-    if not bam_path.is_file():
-        raise FileNotFoundError(f"host BAM not found: {bam_path}")
     counts: dict[str, int] = defaultdict(int)
-    with pysam.AlignmentFile(str(bam_path), "rb") as bam:
-        for record in bam.fetch(until_eof=True):
-            try:
-                cb_value = str(record.get_tag(cb_tag)).upper()
-            except KeyError:
-                continue
-            spot = cb_to_spot.get(cb_value)
-            if spot is not None:
-                counts[spot] += 1
+    for bam_path in bam_paths:
+        if not bam_path.is_file():
+            raise FileNotFoundError(f"host BAM not found: {bam_path}")
+        with pysam.AlignmentFile(str(bam_path), "rb") as bam:
+            for record in bam.fetch(until_eof=True):
+                try:
+                    cb_value = str(record.get_tag(cb_tag)).upper()
+                except KeyError:
+                    continue
+                spot = cb_to_spot.get(cb_value)
+                if spot is not None:
+                    counts[spot] += 1
     return dict(counts)
 
 
@@ -382,7 +383,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         validate_args(args)
         work_dir = Path(args.work_dir)
         manifest_path = work_dir / "coverage" / "spot_manifest.tsv"
-        bam_path = work_dir / "pooled" / "pooled.cb.bam"
+        if args.assay == "smc":
+            bam_paths = [
+                work_dir / "pooled" / "pooled.watson.cb.bam",
+                work_dir / "pooled" / "pooled.crick.cb.bam",
+            ]
+        else:
+            bam_paths = [work_dir / "pooled" / "pooled.cb.bam"]
         coverage_path = work_dir / "coverage" / "host" / "host.CG.cov"
         fastp_path = Path(args.fastp_json) if args.fastp_json else work_dir / "fastp" / "fastp.json"
         output_dir = Path(args.output_dir) if args.output_dir else work_dir / "saturation"
@@ -393,7 +400,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"[saturation] assay={args.assay}")
         print(f"[saturation] barcode-c-to-t={str(barcode_c_to_t).lower()}")
         print(f"[saturation] work-dir={work_dir}")
-        print(f"[saturation] host-bam={bam_path}")
+        print(
+            "[saturation] host-bams="
+            + ",".join(str(path) for path in bam_paths)
+        )
         print(f"[saturation] spot-manifest={manifest_path}")
         print(f"[saturation] host-cg-cov={coverage_path}")
         print(f"[saturation] reads-threshold={args.reads_threshold}")
@@ -406,7 +416,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 0
 
         cb_to_spot = load_cb_to_spot(manifest_path, c_to_t=barcode_c_to_t)
-        spot_reads = count_spot_reads(bam_path, args.cb_tag, cb_to_spot)
+        spot_reads = count_spot_reads(bam_paths, args.cb_tag, cb_to_spot)
         hq_candidates = {
             spot
             for spot, reads in spot_reads.items()

@@ -51,8 +51,13 @@ pooled_dir=$final_dir/pooled
 cutoff_dir=$final_dir/mbias
 output_dir=$final_dir/coverage
 caller_script=$REPO_DIR/script/steps/python/06.spike_caller.py
+merge_script=$REPO_DIR/script/steps/python/06.merge_cov.py
 if [[ ! -f "$caller_script" ]]; then
     echo "[dbitm] spike-call: caller script not found: $caller_script" >&2
+    exit 1
+fi
+if [[ "$assay" == smc && ! -f "$merge_script" ]]; then
+    echo "[dbitm] spike-call: coverage merge script not found: $merge_script" >&2
     exit 1
 fi
 
@@ -176,6 +181,54 @@ run_target() {
     target_count=$((target_count + 1))
 }
 
+run_conversion_split_target() {
+    local output_name=$1
+    local pooled_suffix=$2
+    local reference_path=$3
+    local chromosomes=$4
+    local cutoff_name=$5
+    local conversion_class context branch_cov
+    local -a contexts=()
+
+    if [[ "$assay" != smc ]]; then
+        run_target \
+            "$output_name" "$pooled_dir/pooled.$pooled_suffix.bam" \
+            "$reference_path" "$chromosomes" "$cutoff_name"
+        return
+    fi
+
+    for conversion_class in watson crick; do
+        run_target \
+            "$output_name.$conversion_class" \
+            "$pooled_dir/pooled.$conversion_class.$pooled_suffix.bam" \
+            "$reference_path" "$chromosomes" \
+            "$cutoff_name.$conversion_class"
+    done
+    if [[ "$dry_run" == true ]]; then
+        echo "[dbitm] spike-call planned merge: $output_name Watson + Crick"
+        return
+    fi
+
+    case "$caller_context_mode" in
+        cg) contexts=(CG) ;;
+        ch) contexts=(CA CC CT) ;;
+        both) contexts=(CG CA CC CT) ;;
+    esac
+    for context in "${contexts[@]}"; do
+        for conversion_class in watson crick; do
+            branch_cov=$run_output/$output_name.$conversion_class.$context.cov
+            [[ -f "$branch_cov" ]] || : > "$branch_cov"
+        done
+        pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default \
+            python "$merge_script" \
+            --input "$run_output/$output_name.watson.$context.cov" \
+            --input "$run_output/$output_name.crick.$context.cov" \
+            --output "$run_output/$output_name.$context.cov" \
+            --chromosomes "$chromosomes" \
+            >> "$log_path" 2>&1
+    done
+}
+
 echo "====== dbitm spike-call ======"
 echo "[dbitm] assay: $assay"
 echo "[dbitm] mode: $spike_call_mode"
@@ -193,7 +246,8 @@ if [[ "$spike_call_mode" == all || "$spike_call_mode" == mito ]]; then
             exit 1
         fi
         host_reference=$(resolve_reference "$host_reference")
-        run_target host_mito "$pooled_dir/pooled.cb.bam" "$host_reference" "$mito_chromosomes" host
+        run_conversion_split_target \
+            host_mito cb "$host_reference" "$mito_chromosomes" host
     fi
 fi
 
@@ -225,7 +279,9 @@ if [[ "$spike_call_mode" == all || "$spike_call_mode" == spike ]]; then
             echo "[dbitm] spike-call: reference contains no contigs ($spike_name): $spike_reference" >&2
             exit 1
         fi
-        run_target "$spike_name" "$pooled_dir/pooled.$spike_name.bam" "$spike_reference" "$spike_chromosomes" "$spike_name"
+        run_conversion_split_target \
+            "$spike_name" "$spike_name" "$spike_reference" \
+            "$spike_chromosomes" "$spike_name"
     done
 fi
 

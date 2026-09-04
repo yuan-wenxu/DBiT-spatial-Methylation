@@ -72,9 +72,10 @@ POOL_SORT_MEM=${POOL_SORT_MEM:-48G}
 # M-bias configuration
 # all: host and configured spike-ins; host: host only; spike: spike-ins only
 MBIAS_MODE=${MBIAS_MODE:-all}
-# Host is sampled deterministically; spike-in pooled BAMs are processed in full.
+# Host is sampled deterministically; for SmC the limit applies independently
+# to the Watson and Crick pools. Spike-in pooled BAMs are processed in full.
 MBIAS_HOST_SUBSAMPLE_FRACTION=${MBIAS_HOST_SUBSAMPLE_FRACTION:-0.1}
-# Maximum selected host alignment records; 0 disables the limit.
+# Maximum selected host alignment records per M-bias target; 0 disables the limit.
 MBIAS_HOST_MAX_RECORDS=${MBIAS_HOST_MAX_RECORDS:-10000000}
 MBIAS_MAX_CYCLE=${MBIAS_MAX_CYCLE:-150}
 # Cycles whose total CpG coverage does not exceed this are skipped in M-bias outputs.

@@ -228,31 +228,32 @@ def is_unique_mapped(record: pysam.AlignedSegment, minimum_mapq: int) -> bool:
 
 
 def count_host_metrics(
-    bam_path: Path,
+    bam_paths: list[Path],
     cb_tag: str,
     cb_to_spot: dict[str, str],
     minimum_mapq: int,
 ) -> tuple[dict[str, int], Optional[int], Optional[int]]:
-    if not bam_path.is_file():
-        return {}, None, None
     spot_counts: dict[str, int] = defaultdict(int)
     mapped_reads = 0
     valid_reads = 0
-    with pysam.AlignmentFile(str(bam_path), "rb") as bam:
-        for record in bam.fetch(until_eof=True):
-            try:
-                cb_value = str(record.get_tag(cb_tag)).upper()
-            except KeyError:
-                cb_value = ""
-            if not record.is_secondary and not record.is_supplementary:
-                spot = cb_to_spot.get(cb_value)
-                if spot is not None:
-                    spot_counts[spot] += 1
-            if not is_unique_mapped(record, minimum_mapq):
-                continue
-            mapped_reads += 1
-            if record.flag in VALID_FLAGS:
-                valid_reads += 1
+    if any(not path.is_file() for path in bam_paths):
+        return {}, None, None
+    for bam_path in bam_paths:
+        with pysam.AlignmentFile(str(bam_path), "rb") as bam:
+            for record in bam.fetch(until_eof=True):
+                try:
+                    cb_value = str(record.get_tag(cb_tag)).upper()
+                except KeyError:
+                    cb_value = ""
+                if not record.is_secondary and not record.is_supplementary:
+                    spot = cb_to_spot.get(cb_value)
+                    if spot is not None:
+                        spot_counts[spot] += 1
+                if not is_unique_mapped(record, minimum_mapq):
+                    continue
+                mapped_reads += 1
+                if record.flag in VALID_FLAGS:
+                    valid_reads += 1
     return dict(spot_counts), mapped_reads, valid_reads
 
 
@@ -484,7 +485,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     output_dir = Path(args.output_dir) if args.output_dir else work_dir / "summary"
     coverage_dir = work_dir / "coverage"
     manifest_path = coverage_dir / "spot_manifest.tsv"
-    host_bam = work_dir / "pooled" / "pooled.cb.bam"
+    if args.assay == "smc":
+        host_bams = [
+            work_dir / "pooled" / "pooled.watson.cb.bam",
+            work_dir / "pooled" / "pooled.crick.cb.bam",
+        ]
+    else:
+        host_bams = [work_dir / "pooled" / "pooled.cb.bam"]
     saturation_summary = work_dir / "saturation" / "saturation_summary.tsv"
     if args.context_mode == "cg":
         contexts = ["cg"]
@@ -507,16 +514,20 @@ def main(argv: Optional[list[str]] = None) -> int:
         discovered_spikes: set[str] = set()
         for context in contexts:
             suffix = str(CONTEXT_SPECS[context]["suffix"])
-            discovered_spikes.update(
-                path.name.removesuffix(f".{suffix}.cov")
-                for path in coverage_dir.glob(f"*.{suffix}.cov")
-                if path.name != f"host_mito.{suffix}.cov"
-            )
+            for path in coverage_dir.glob(f"*.{suffix}.cov"):
+                name = path.name.removesuffix(f".{suffix}.cov")
+                if name == "host_mito" or name.endswith((".watson", ".crick")):
+                    continue
+                discovered_spikes.add(name)
         spike_names = sorted(discovered_spikes)
 
     print(f"[summary] work-dir={work_dir}")
     print(f"[summary] assay={args.assay}")
     print(f"[summary] context-mode={args.context_mode}")
+    print(
+        "[summary] host-bams="
+        + ",".join(str(path) for path in host_bams)
+    )
     for context in contexts:
         print(f"[summary] host-{context}-cov={host_cov_paths[context]}")
     print(f"[summary] spike-names={','.join(spike_names) if spike_names else 'none'}")
@@ -532,7 +543,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             c_to_t=args.assay in {"emseq", "cabernet"},
         )
         spot_counts, host_mapped, host_valid = count_host_metrics(
-            host_bam, args.cb_tag, cb_to_spot, args.min_mapping_quality
+            host_bams, args.cb_tag, cb_to_spot, args.min_mapping_quality
         )
         per_spot_rows = summarize_spots(host_cov_paths, spot_counts, coordinates)
         if not per_spot_rows:

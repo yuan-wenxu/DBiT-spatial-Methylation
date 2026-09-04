@@ -347,6 +347,14 @@ def is_trimmed(
     return left_cycle <= left_trim or right_cycle <= right_trim
 
 
+def has_unclear_conversion_strand(record: pysam.AlignedSegment) -> bool:
+    """Return whether BISCUIT marked the conversion strand as unknown."""
+    try:
+        return record.get_tag("YD") == "u"
+    except KeyError:
+        return False
+
+
 # CG counters: per-spot → forward-C position → [methylated, unmethylated]
 CgCounts = Dict[str, Dict[int, List[int]]]
 # CH counters: per-spot → position → [methylated, unmethylated, context, strand]
@@ -383,6 +391,8 @@ def count_cg_column(
     for pileup_read in pileup_col.pileups:
         record = pileup_read.alignment
         if record.flag not in PAIRED_FLAGS:
+            continue
+        if has_unclear_conversion_strand(record):
             continue
         if pileup_read.is_del or pileup_read.is_refskip:
             continue
@@ -462,6 +472,8 @@ def count_ch_column(
     for pileup_read in pileup_col.pileups:
         record = pileup_read.alignment
         if record.flag not in strand_flags:
+            continue
+        if has_unclear_conversion_strand(record):
             continue
         if pileup_read.is_del or pileup_read.is_refskip:
             continue

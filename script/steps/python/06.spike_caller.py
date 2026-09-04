@@ -93,6 +93,8 @@ def count_cg_column(pileup_col, args: argparse.Namespace, counts) -> None:
         record = pileup_read.alignment
         if record.flag not in SHARED.PAIRED_FLAGS:
             continue
+        if SHARED.has_unclear_conversion_strand(record):
+            continue
         if pileup_read.is_del or pileup_read.is_refskip:
             continue
         query_pos = pileup_read.query_position
@@ -141,6 +143,8 @@ def count_ch_column(
     for pileup_read in pileup_col.pileups:
         record = pileup_read.alignment
         if record.flag not in strand_flags:
+            continue
+        if SHARED.has_unclear_conversion_strand(record):
             continue
         if pileup_read.is_del or pileup_read.is_refskip:
             continue

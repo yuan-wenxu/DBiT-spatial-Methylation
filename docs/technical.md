@@ -229,6 +229,8 @@ in their names, for example `0001.watson.lambda.bam` and
 `04.pool.sh` concatenates host chunk BAMs, coordinate-sorts the result, and
 creates its index. Spike-in BAMs are pooled independently.
 
+For assays other than SmC:
+
 ```text
 dbitm/pooled/
 ├── pooled.cb.bam
@@ -241,12 +243,20 @@ dbitm/pooled/
 `POOL_SORT_MEM` is memory per SAMtools sort thread. Spike-in names are read
 from the assay-specific configured alignment-index array.
 
+SmC keeps the conversion classes separate because Watson has the long parent
+as R1 and the short daughter as R2, whereas Crick has the short daughter as R1
+and the long parent as R2. It produces `pooled.watson.cb.bam` and
+`pooled.crick.cb.bam`, plus corresponding Watson/Crick spike-in pools. It does
+not create a merged `pooled.cb.bam` or merged spike-in BAM. M-bias and calling
+use the class-specific files, while summary and saturation count the two host
+BAMs directly.
+
 ### 4.5 M-bias
 
 `05.mbias.sh` measures CpG methylation by R1/R2 cycle and infers end-trimming
 cutoffs. It excludes unmapped, secondary, supplementary, unsupported-orientation,
-and low-quality evidence. Host reads may be deterministically subsampled;
-spike-in targets are processed in full.
+`YD:u`, and low-quality evidence. Host reads may be deterministically
+subsampled; spike-in targets are processed in full.
 
 Each target produces:
 
@@ -258,6 +268,10 @@ Each target produces:
 
 If no stable region can be inferred, a zero-byte cutoff marker means subsequent
 calling proceeds without trimming for that target.
+
+For SmC, host and every spike-in produce separate Watson/Crick M-bias outputs,
+for example `host.watson.mbias.*` and `host.crick.mbias.*`. Their inferred R1/R2
+cutoffs are therefore applied only to the matching conversion class.
 
 ### 4.6 Methylation calling
 
@@ -274,6 +288,16 @@ coverage/host/<X>/<X>_<Y>.CT.cov
 
 CG output contains genomic position, methylation percentage, methylated count,
 and unmethylated count. CH output additionally records context and strand.
+
+For SmC, Watson and Crick are called independently with
+`host.watson.mbias.cutoffs.tsv` and `host.crick.mbias.cutoffs.tsv`. The separate
+results are retained under `coverage/watson/host` and `coverage/crick/host`.
+Counts at matching sites are summed into `coverage/host`, preserving the
+existing downstream interface. The two spot manifests are merged by `spot_id`;
+each spot is retained once, and a spot present in only one branch is preserved.
+Mitochondrial and spike-in calls follow the same
+split-call-and-merge rule and retain files such as `lambda.watson.CG.cov` and
+`lambda.crick.CG.cov` alongside `lambda.CG.cov`.
 
 `06.spike_call.sh` creates aggregate, non-spatial mitochondrial and spike-in
 calls. `SPIKE_CALL_MODE` selects `mito`, `spike`, or `all`.

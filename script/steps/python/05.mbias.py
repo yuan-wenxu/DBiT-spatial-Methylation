@@ -174,6 +174,14 @@ def base_quality_passes(
     return all(qualities[position] >= minimum for position in query_positions)
 
 
+def has_unclear_conversion_strand(record: pysam.AlignedSegment) -> bool:
+    """Return whether BISCUIT marked the conversion strand as unknown."""
+    try:
+        return record.get_tag("YD") == "u"
+    except KeyError:
+        return False
+
+
 def classify_taps(
     record: pysam.AlignedSegment,
     query_pos: int,
@@ -286,6 +294,8 @@ def count_mbias(
             if record.is_unmapped or record.is_secondary or record.is_supplementary:
                 continue
             if record.flag not in PAIRED_FLAGS:
+                continue
+            if has_unclear_conversion_strand(record):
                 continue
             if record.mapping_quality < args.min_mapping_quality:
                 continue
