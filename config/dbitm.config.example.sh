@@ -55,6 +55,9 @@ SMC_LINKER_BC=${SMC_LINKER_BC:-ATCCACGTGCTTGAGCGCGCTGCATACTTG}
 SMC_INSERT_LEFT=${SMC_INSERT_LEFT:-TGCAGTCGTGCCATGAGATGTGTATAAGAGACAG}
 SMC_MAX_CONVERSION_MISMATCHES=${SMC_MAX_CONVERSION_MISMATCHES:-4}
 SMC_MINIMUM_SCORE_MARGIN=${SMC_MINIMUM_SCORE_MARGIN:-3}
+# Ambiguous/discarded FASTQs are not used downstream. Saving them adds I/O and
+# compression time; set to 1 only when they are needed for troubleshooting.
+SMC_SAVE_UNINFORMATIVE_FASTQ=${SMC_SAVE_UNINFORMATIVE_FASTQ:-0}
 
 # genome alignment configuration
 # aligner threads used by each independent alignment task

@@ -8,6 +8,7 @@ import gzip
 import json
 import multiprocessing as mp
 import queue
+import re
 import time
 import traceback
 from collections import Counter
@@ -123,6 +124,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         required=True,
         help="Progress interval per chunk; 0 disables it.",
+    )
+    parser.add_argument(
+        "--save-uninformative-fastq",
+        action="store_true",
+        help=(
+            "Write ambiguous and discarded read pairs. These FASTQs are not "
+            "used downstream and increase output and compression time."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -280,9 +289,24 @@ def anchor_mismatches(observed: str, expected: str) -> int:
     )
 
 
+def compile_conversion_anchor(expected: str) -> re.Pattern[str]:
+    """Compile a C/T- and G/A-compatible exact anchor pattern."""
+    return re.compile(
+        "".join(
+            "[CT]"
+            if base == "C"
+            else "[GA]"
+            if base == "G"
+            else re.escape(base)
+            for base in expected
+        )
+    )
+
+
 def find_conversion_anchor(
     sequence: str,
     expected: str,
+    exact_pattern: re.Pattern[str],
     window_start: int,
     window_end: int,
     max_mismatches: int,
@@ -293,6 +317,18 @@ def find_conversion_anchor(
     length = len(expected)
     if not expected or window_start + length > window_end:
         return None
+
+    # Most reads have no mismatch outside the expected conversion states.
+    # Let the regex engine handle that common case, including the uniqueness
+    # check, and retain the exhaustive scan only for mismatch-tolerant hits.
+    first_match = exact_pattern.search(sequence, window_start, window_end)
+    if first_match is not None:
+        second_match = exact_pattern.search(
+            sequence, first_match.start() + 1, window_end
+        )
+        if second_match is not None:
+            return None
+        return first_match.start(), first_match.end()
 
     best_distance = max_mismatches + 1
     best_positions: list[int] = []
@@ -393,6 +429,8 @@ COUNT_KEYS = (
 class SplitConfig:
     linker_bc: str
     insert_left: str
+    linker_pattern: re.Pattern[str]
+    insert_pattern: re.Pattern[str]
     barcode_length: int
     anchor_edit_distance: int
     max_conversion_mismatches: int
@@ -430,7 +468,7 @@ def chunk_output_paths(
 
 
 def open_chunk_outputs(
-    paths: dict[str, Path], gzip_level: int
+    paths: dict[str, Path], gzip_level: int, save_uninformative_fastq: bool
 ) -> tuple[ExitStack, dict[str, TextIO]]:
     stack = ExitStack()
     try:
@@ -438,6 +476,10 @@ def open_chunk_outputs(
             key: stack.enter_context(open_text(path, "w", gzip_level))
             for key, path in paths.items()
             if key != "stats"
+            and (
+                save_uninformative_fastq
+                or not key.startswith(("ambiguous_", "discarded_"))
+            )
         }
     except BaseException:
         stack.close()
@@ -490,6 +532,7 @@ def split_pair(
     linker_position = find_conversion_anchor(
         sequence,
         config.linker_bc,
+        config.linker_pattern,
         0,
         min(
             len(sequence),
@@ -552,6 +595,7 @@ def split_pair(
     insert_position = find_conversion_anchor(
         sequence,
         config.insert_left,
+        config.insert_pattern,
         barcode1_end,
         barcode1_end + len(config.insert_left) + 40,
         config.anchor_edit_distance,
@@ -630,6 +674,7 @@ def run_chunk_worker(
     compression: str,
     gzip_level: int,
     progress_reads: int,
+    save_uninformative_fastq: bool,
     config: SplitConfig,
 ) -> None:
     output_dir = Path(output_dir_text)
@@ -643,7 +688,9 @@ def run_chunk_worker(
     next_progress_report = progress_reads
 
     try:
-        stack, handles = open_chunk_outputs(paths, gzip_level)
+        stack, handles = open_chunk_outputs(
+            paths, gzip_level, save_uninformative_fastq
+        )
         while True:
             batch = batch_queue.get()
             if batch is None:
@@ -655,10 +702,13 @@ def run_chunk_worker(
                     counts[reason] += 1
                     group_reason_counts[result.group][reason] += 1
                 counts[f"{result.group}_pairs"] += 1
-                write_record(handles[f"{result.group}_first"], result.first_record)
-                write_record(
-                    handles[f"{result.group}_genomic"], result.genomic_record
-                )
+                if result.group in {"watson", "crick"} or save_uninformative_fastq:
+                    write_record(
+                        handles[f"{result.group}_first"], result.first_record
+                    )
+                    write_record(
+                        handles[f"{result.group}_genomic"], result.genomic_record
+                    )
 
                 if progress_reads > 0 and counts["input_pairs"] >= next_progress_report:
                     now = time.monotonic()
@@ -722,10 +772,18 @@ def run_chunk_worker(
         "output_r2_watson": paths["watson_genomic"].name,
         "output_r1_crick": paths["crick_first"].name,
         "output_r2_crick": paths["crick_genomic"].name,
-        "output_r1_ambiguous": paths["ambiguous_first"].name,
-        "output_r2_ambiguous": paths["ambiguous_genomic"].name,
-        "output_r1_discarded": paths["discarded_first"].name,
-        "output_r2_discarded": paths["discarded_genomic"].name,
+        "output_r1_ambiguous": (
+            paths["ambiguous_first"].name if save_uninformative_fastq else None
+        ),
+        "output_r2_ambiguous": (
+            paths["ambiguous_genomic"].name if save_uninformative_fastq else None
+        ),
+        "output_r1_discarded": (
+            paths["discarded_first"].name if save_uninformative_fastq else None
+        ),
+        "output_r2_discarded": (
+            paths["discarded_genomic"].name if save_uninformative_fastq else None
+        ),
         "stats": paths["stats"].name,
     }
     paths["stats"].write_text(json.dumps(row, indent=2), encoding="utf-8")
@@ -787,6 +845,8 @@ def main(argv: list[str] | None = None) -> int:
     config = SplitConfig(
         linker_bc=linker_bc,
         insert_left=insert_left,
+        linker_pattern=compile_conversion_anchor(linker_bc),
+        insert_pattern=compile_conversion_anchor(insert_left),
         barcode_length=barcode_length,
         anchor_edit_distance=args.anchor_edit_distance,
         max_conversion_mismatches=args.max_conversion_mismatches,
@@ -814,6 +874,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.compression,
                 args.gzip_level,
                 args.progress_reads,
+                args.save_uninformative_fastq,
                 config,
             ),
             name=f"smc-split-chunk-{index + 1:04d}",
@@ -922,6 +983,7 @@ def main(argv: list[str] | None = None) -> int:
         "input_r2": Path(args.genomic_fastq).name,
         "output_dir": str(output_dir),
         "compression": args.compression,
+        "save_uninformative_fastq": args.save_uninformative_fastq,
         "chunk_count": args.chunks,
         "batch_size": args.batch_size,
         "batch_count": batch_count,
@@ -965,6 +1027,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[extract-bc] batch-size={args.batch_size}")
     print(f"[extract-bc] batch-count={batch_count}")
     print(f"[extract-bc] compression={args.compression}")
+    print(
+        "[extract-bc] save-uninformative-fastq="
+        f"{str(args.save_uninformative_fastq).lower()}"
+    )
     print(f"[extract-bc] stats={stats_path}")
     print(
         f"[extract-bc] informative={informative}/{input_pairs} "

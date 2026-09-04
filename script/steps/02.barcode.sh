@@ -137,6 +137,10 @@ if [[ "$assay" == smc ]]; then
         echo "[dbitm] barcode: SMC_MINIMUM_SCORE_MARGIN must be >= 0" >&2
         exit 1
     fi
+    if [[ ! "$SMC_SAVE_UNINFORMATIVE_FASTQ" =~ ^[01]$ ]]; then
+        echo "[dbitm] barcode: SMC_SAVE_UNINFORMATIVE_FASTQ must be 0 or 1" >&2
+        exit 1
+    fi
 fi
 
 use_scratch=false
@@ -155,6 +159,9 @@ echo "[dbitm] batch size: $BARCODE_BATCH_SIZE read pairs"
 echo "[dbitm] progress interval: $BARCODE_PROGRESS_READS read pairs per chunk"
 if [[ "$assay" == taps-v2 ]]; then
     echo "[dbitm] methylated C positions: $BARCODE_METHYLATED_C_POSITIONS"
+fi
+if [[ "$assay" == smc ]]; then
+    echo "[dbitm] save uninformative SmC FASTQs: $SMC_SAVE_UNINFORMATIVE_FASTQ"
 fi
 echo "[dbitm] compression step: $compression_step"
 echo "[dbitm] output directory: $final_dir/barcode"
@@ -205,6 +212,10 @@ if [[ "$compression_step" == shell ]]; then
 fi
 
 if [[ "$assay" == smc ]]; then
+    smc_output_args=()
+    if [[ "$SMC_SAVE_UNINFORMATIVE_FASTQ" == 1 ]]; then
+        smc_output_args+=(--save-uninformative-fastq)
+    fi
     pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default python "$python_script" \
         --barcode-fastq "$run_r1" \
         --genomic-fastq "$run_r2" \
@@ -221,6 +232,7 @@ if [[ "$assay" == smc ]]; then
         --barcode-hamming-distance "$BARCODE_HAMMING_DISTANCE" \
         --progress-reads "$BARCODE_PROGRESS_READS" \
         --gzip-level "$BARCODE_GZIP_LEVEL" \
+        "${smc_output_args[@]}" \
         > "$run_output/barcode.log" 2>&1
 else
     pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default python "$python_script" \

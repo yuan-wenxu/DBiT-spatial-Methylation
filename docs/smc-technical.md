@@ -148,6 +148,11 @@ Read pairs are assigned to four groups:
 | `ambiguous` | Barcodes are valid, but the insert boundary or conversion class is uncertain |
 | `discarded` | Linker/barcode extraction failed or a barcode could not be corrected uniquely |
 
+Only Watson and Crick FASTQs are used by later pipeline stages. Ambiguous and
+discarded counts are always recorded, but their FASTQs are written only when
+`SMC_SAVE_UNINFORMATIVE_FASTQ=1`; retaining them increases output and
+compression time.
+
 When both barcodes are available, the read name is annotated as:
 
 ```text
