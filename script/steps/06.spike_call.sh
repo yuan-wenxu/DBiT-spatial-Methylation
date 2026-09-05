@@ -48,6 +48,7 @@ esac
 raw_abs=$(realpath "$raw_path")
 final_dir=$(dirname "$raw_abs")/dbitm
 pooled_dir=$final_dir/pooled
+smc_filter_dir=$final_dir/smc_xxx_filter
 cutoff_dir=$final_dir/mbias
 output_dir=$final_dir/coverage
 caller_script=$REPO_DIR/script/steps/python/06.spike_caller.py
@@ -134,7 +135,10 @@ run_target() {
         return 0
     fi
     if [[ ! -f "$bam_path" ]]; then
-        echo "[dbitm] spike-call: pooled BAM not found ($output_name): $bam_path" >&2
+        echo "[dbitm] spike-call: input BAM not found ($output_name): $bam_path" >&2
+        if [[ "$assay" == smc ]]; then
+            echo "[dbitm] spike-call: run the smc-filter step first." >&2
+        fi
         return 1
     fi
     if ! find_bam_index "$bam_path" > /dev/null; then
@@ -187,7 +191,7 @@ run_conversion_split_target() {
     local reference_path=$3
     local chromosomes=$4
     local cutoff_name=$5
-    local conversion_class context branch_cov
+    local conversion_class context branch_cov conversion_bam
     local -a contexts=()
 
     if [[ "$assay" != smc ]]; then
@@ -198,9 +202,13 @@ run_conversion_split_target() {
     fi
 
     for conversion_class in watson crick; do
+        conversion_bam=$pooled_dir/pooled.$conversion_class.$pooled_suffix.bam
+        if [[ "$assay" == smc ]]; then
+            conversion_bam=$smc_filter_dir/$(basename "$conversion_bam")
+        fi
         run_target \
             "$output_name.$conversion_class" \
-            "$pooled_dir/pooled.$conversion_class.$pooled_suffix.bam" \
+            "$conversion_bam" \
             "$reference_path" "$chromosomes" \
             "$cutoff_name.$conversion_class"
     done
@@ -234,6 +242,9 @@ echo "[dbitm] assay: $assay"
 echo "[dbitm] mode: $spike_call_mode"
 echo "[dbitm] context mode: $caller_context_mode"
 echo "[dbitm] pooled directory: $pooled_dir"
+if [[ "$assay" == smc ]]; then
+    echo "[dbitm] SmC filtered BAM directory: $smc_filter_dir"
+fi
 echo "[dbitm] output directory: $output_dir"
 echo "[dbitm] config: $config_file"
 

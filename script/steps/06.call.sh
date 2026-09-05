@@ -124,6 +124,7 @@ esac
 raw_abs=$(realpath "$raw_path")
 final_dir=$(dirname "$raw_abs")/dbitm
 pooled_dir=$final_dir/pooled
+smc_filter_dir=$final_dir/smc_xxx_filter
 cutoff_dir=$final_dir/mbias
 caller_script=$REPO_DIR/script/steps/python/06.methy_caller.py
 merge_script=$REPO_DIR/script/steps/python/06.merge_cov.py
@@ -142,8 +143,8 @@ declare -a cutoff_paths=()
 if [[ "$assay" == smc ]]; then
     call_labels=(watson crick)
     call_bams=(
-        "$pooled_dir/pooled.watson.cb.bam"
-        "$pooled_dir/pooled.crick.cb.bam"
+        "$smc_filter_dir/pooled.watson.cb.bam"
+        "$smc_filter_dir/pooled.crick.cb.bam"
     )
     cutoff_paths=(
         "$cutoff_dir/host.watson.mbias.cutoffs.tsv"
@@ -161,10 +162,14 @@ for call_index in "${!call_labels[@]}"; do
     cutoff_path=${cutoff_paths[$call_index]}
     if [[ ! -f "$bam_path" ]]; then
         if [[ "$dry_run" == true ]]; then
-            echo "[dbitm] call: dry-run expects future pooled BAM ($label): $bam_path"
+            echo "[dbitm] call: dry-run expects future input BAM ($label): $bam_path"
         else
-            echo "[dbitm] call: pooled BAM not found ($label): $bam_path" >&2
-            echo "[dbitm] call: run the pool step first." >&2
+            echo "[dbitm] call: input BAM not found ($label): $bam_path" >&2
+            if [[ "$assay" == smc ]]; then
+                echo "[dbitm] call: run the smc-filter step first." >&2
+            else
+                echo "[dbitm] call: run the pool step first." >&2
+            fi
             exit 1
         fi
     fi
@@ -215,6 +220,9 @@ echo "[dbitm] chromosomes: $CALL_CHROMOSOMES"
 echo "[dbitm] context mode: $caller_context_mode"
 echo "[dbitm] config: $config_file"
 echo "[dbitm] output directory: $final_dir/coverage"
+if [[ "$assay" == smc ]]; then
+    echo "[dbitm] SmC filtered BAM directory: $smc_filter_dir"
+fi
 
 if [[ "$dry_run" == true ]]; then
     if [[ -n ${SCRATCH_ROOT:-} && "$SCRATCH_ROOT" != /* ]]; then

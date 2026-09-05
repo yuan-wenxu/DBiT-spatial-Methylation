@@ -148,9 +148,12 @@ dbitm taps all --input /path/to/sample/fastq --dry-run
 The required order is:
 
 ```text
-fastp -> barcode -> (spike-align + align) -> pool -> mbias -+-> spike-call ---------+
-                                                           +-> call -> saturation -+-> summary -> methscan
+fastp -> barcode -> (spike-align + align) -> pool -> mbias -> [smc-filter] -+-> spike-call ---------+
+                                                                       +-> call -> saturation -+-> summary -> methscan
 ```
+
+`smc-filter` is an SmC-only stage. It writes persistent XXX-filtered BAMs
+before `call` and `spike-call`; other assays skip it.
 
 Use another configuration file with:
 
@@ -172,6 +175,7 @@ sample/
     ├── spike_align/
     ├── pooled/
     ├── mbias/
+    ├── smc_xxx_filter/  # SmC only
     ├── coverage/
     ├── saturation/
     ├── summary/

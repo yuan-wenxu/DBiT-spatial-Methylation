@@ -153,6 +153,22 @@ discarded counts are always recorded, but their FASTQs are written only when
 `SMC_SAVE_UNINFORMATIVE_FASTQ=1`; retaining them increases output and
 compression time.
 
+For M-bias coordinates, the trimmed barcode-derived mate is placed against the
+right edge of the original 150-cycle axis. It is R2 for Watson and R1 for
+Crick; the genomic mate remains on its full-length coordinate axis.
+
+After M-bias, the independent `smc-filter` stage filters each alignment using
+the original SmC-seq `XXX` non-conversion rule. Within the bases retained by
+the branch's M-bias cutoffs, non-cytosine positions are ignored and methylated
+CpG, CHG, and CHH observations are treated as one sequence of cytosine states.
+An alignment containing three successive methylated cytosine observations is
+excluded from all CpG and CH calls. The stage applies the same rule to host and
+spike-in inputs and reports evaluated and filtered alignment counts in its
+logs.
+
+The output BAM is coordinate sorted like its input and is written together
+with `input.xxx-filtered.bam.bai`.
+
 When both barcodes are available, the read name is annotated as:
 
 ```text

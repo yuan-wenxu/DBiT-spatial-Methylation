@@ -41,7 +41,21 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--mbias-tsv", required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--r1-original-length", type=int, default=150)
+    parser.add_argument(
+        "--r1-original-length",
+        type=int,
+        default=150,
+        help=(
+            "Shared original R1/R2 cycle-axis length. A positive value fixes "
+            "the axis end for both reads instead of inferring it from covered "
+            "M-bias cycles. Default: 150."
+        ),
+    )
+    parser.add_argument(
+        "--right-aligned-read",
+        choices=("R1", "R2", "none"),
+        default="R1",
+    )
     parser.add_argument(
         "--rate-tolerance",
         type=float,
@@ -116,6 +130,7 @@ def infer_cutoff(
     read: str,
     points: dict[int, CyclePoint],
     r1_original_length: int,
+    right_aligned_read: str,
     rate_tolerance: float,
     coverage_fraction: float,
     min_coverage: int,
@@ -142,13 +157,14 @@ def infer_cutoff(
     if not supported_cycles:
         raise ValueError(f"no coverage-supported cycle range available for {read}")
 
-    if read == "R1" and r1_original_length:
-        axis_start = min(supported_cycles)
+    if r1_original_length:
         axis_end = r1_original_length
-        if axis_start > axis_end:
+        if max(points) > axis_end:
             raise ValueError(
-                f"R1 cycle range starts after original length: {axis_start} > {axis_end}"
+                f"{read} observed cycle exceeds configured original read length: "
+                f"{max(points)} > {axis_end}"
             )
+        axis_start = min(supported_cycles) if read == right_aligned_read else 1
     else:
         axis_start = 1
         axis_end = max(points)
@@ -282,6 +298,7 @@ def main() -> int:
                     read,
                     points[read],
                     args.r1_original_length,
+                    args.right_aligned_read,
                     args.rate_tolerance,
                     args.coverage_fraction,
                     args.min_coverage,

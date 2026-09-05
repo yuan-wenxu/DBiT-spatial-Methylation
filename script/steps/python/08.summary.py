@@ -28,6 +28,7 @@ import pysam
 
 VALID_FLAGS = {83, 99, 147, 163}
 CH_CONTEXTS = ("ca", "cc", "ct")
+SMC_EXCLUDED_SPOTS = frozenset({"00_01"})
 CONTEXT_SPECS = {
     "cg": {
         "suffix": "CG",
@@ -245,7 +246,12 @@ def count_host_metrics(
                     cb_value = str(record.get_tag(cb_tag)).upper()
                 except KeyError:
                     cb_value = ""
-                if not record.is_secondary and not record.is_supplementary:
+                if (
+                    cb_value
+                    and is_unique_mapped(record, minimum_mapq)
+                    and not record.is_secondary
+                    and not record.is_supplementary
+                ):
                     spot = cb_to_spot.get(cb_value)
                     if spot is not None:
                         spot_counts[spot] += 1
@@ -257,14 +263,15 @@ def count_host_metrics(
     return dict(spot_counts), mapped_reads, valid_reads
 
 
-def count_mapped_reads(path: Path, minimum_mapq: int) -> Optional[int]:
-    if not path.is_file():
+def count_mapped_reads(paths: list[Path], minimum_mapq: int) -> Optional[int]:
+    if any(not path.is_file() for path in paths):
         return None
     count = 0
-    with pysam.AlignmentFile(str(path), "rb") as bam:
-        for record in bam.fetch(until_eof=True):
-            if is_unique_mapped(record, minimum_mapq):
-                count += 1
+    for path in paths:
+        with pysam.AlignmentFile(str(path), "rb") as bam:
+            for record in bam.fetch(until_eof=True):
+                if is_unique_mapped(record, minimum_mapq):
+                    count += 1
     return count
 
 
@@ -307,6 +314,7 @@ def summarize_spots(
     context_cov_paths: dict[str, Path],
     spot_counts: dict[str, int],
     coordinates: dict[str, tuple[str, str]],
+    excluded_spots: frozenset[str] = frozenset(),
 ) -> list[dict[str, str]]:
     context_stats: dict[str, dict[str, Optional[tuple[float, int]]]] = {}
     observed_spots = set(coordinates) | set(spot_counts)
@@ -314,6 +322,7 @@ def summarize_spots(
         cov_stats = parse_barcoded_cov_stats(cov_path)
         context_stats[context] = cov_stats
         observed_spots.update(cov_stats)
+    observed_spots.difference_update(excluded_spots)
 
     rows: list[dict[str, str]] = []
     for spot in sorted(observed_spots):
@@ -427,7 +436,10 @@ def write_heatmap(
 
 
 def write_methylation_violin(
-    rows: list[dict[str, str]], output: Path, field: str, title: str
+    rows: list[dict[str, str]],
+    output: Path,
+    field: str,
+    title: str,
 ) -> None:
     values: list[float] = []
     for row in rows:
@@ -460,7 +472,10 @@ def write_methylation_violin(
         else:
             axis.scatter([1], [values[0]], color="tab:blue", s=35, zorder=3)
             axis.hlines(values[0], 0.8, 1.2, color="black", linewidth=1.5)
-        axis.set_xticks([1], [f"All spots\n(n={len(values)})"])
+        axis.set_xticks(
+            [1],
+            [f"Covered spots\n(n={len(values)})"],
+        )
         axis.set_xlim(0.5, 1.5)
         axis.set_ylabel("Mean methylation (%)", fontsize=10)
         axis.set_title(title, fontsize=12)
@@ -524,6 +539,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(f"[summary] work-dir={work_dir}")
     print(f"[summary] assay={args.assay}")
     print(f"[summary] context-mode={args.context_mode}")
+    excluded_spots = SMC_EXCLUDED_SPOTS if args.assay == "smc" else frozenset()
+    print(
+        "[summary] excluded-spots="
+        + (",".join(sorted(excluded_spots)) if excluded_spots else "none")
+    )
     print(
         "[summary] host-bams="
         + ",".join(str(path) for path in host_bams)
@@ -543,9 +563,17 @@ def main(argv: Optional[list[str]] = None) -> int:
             c_to_t=args.assay in {"emseq", "cabernet"},
         )
         spot_counts, host_mapped, host_valid = count_host_metrics(
-            host_bams, args.cb_tag, cb_to_spot, args.min_mapping_quality
+            host_bams,
+            args.cb_tag,
+            cb_to_spot,
+            args.min_mapping_quality,
         )
-        per_spot_rows = summarize_spots(host_cov_paths, spot_counts, coordinates)
+        per_spot_rows = summarize_spots(
+            host_cov_paths,
+            spot_counts,
+            coordinates,
+            excluded_spots,
+        )
         if not per_spot_rows:
             raise ValueError("no per-spot coverage or CB-tagged reads were found")
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -594,10 +622,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             }
         )
         for spike_name in spike_names:
-            mapped = count_mapped_reads(
-                work_dir / "pooled" / f"pooled.{spike_name}.bam",
-                args.min_mapping_quality,
-            )
+            if args.assay == "smc":
+                spike_bams = [
+                    work_dir / "pooled" / f"pooled.watson.{spike_name}.bam",
+                    work_dir / "pooled" / f"pooled.crick.{spike_name}.bam",
+                ]
+            else:
+                spike_bams = [
+                    work_dir / "pooled" / f"pooled.{spike_name}.bam"
+                ]
+            mapped = count_mapped_reads(spike_bams, args.min_mapping_quality)
             sample_row[f"{spike_name}_mapped_reads"] = format_int(mapped)
         sample_row["host_valid_reads"] = format_int(host_valid)
         sample_row["valid_reads_rate"] = format_percentage(host_valid, raw_reads)

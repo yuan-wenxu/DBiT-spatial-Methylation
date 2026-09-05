@@ -13,13 +13,13 @@ SmC library structure and strand splitting are documented separately in
 ```text
 fastp -> barcode -> +-> spike-align -+
                     |                 |
-                    +-> align --------+-> pool -> mbias -+-> spike-call ---------+
-                                                         |                       |
-                                                         +-> call -> saturation -+-> summary -> methscan
+                    +-> align --------+-> pool -> mbias -> [smc-filter] -+-> spike-call ---------+
+                                                                      |                       |
+                                                                      +-> call -> saturation -+-> summary -> methscan
 ```
 
-`spike-align` and `align` can run concurrently. After M-bias, `spike-call` and
-`call` can also run concurrently.
+`spike-align` and `align` can run concurrently. For SmC, `smc-filter` runs after
+M-bias; `spike-call` and `call` can then run concurrently from its outputs.
 
 | Stage | Entry point | Purpose |
 |---|---|---|
@@ -29,6 +29,7 @@ fastp -> barcode -> +-> spike-align -+
 | `align` | `script/steps/03.align.sh` | Align host reads and add `CB` tags |
 | `pool` | `script/steps/04.pool.sh` | Pool, sort, and index BAMs |
 | `mbias` | `script/steps/05.mbias.sh` | Infer cycle trimming cutoffs |
+| `smc-filter` | `script/steps/05.1.smc_filter.sh` | Write persistent SmC XXX-filtered BAMs |
 | `spike-call` | `script/steps/06.spike_call.sh` | Call mitochondrial and spike-in methylation |
 | `call` | `script/steps/06.call.sh` | Call per-spot host methylation |
 | `saturation` | `script/steps/07.saturation.sh` | Estimate CpG saturation |
@@ -129,6 +130,8 @@ sites use the corresponding reference G coordinate.
 M-bias cycles are one-based and measured from the original molecule's 5-prime
 end. Reverse alignments invert the query position. R1 also receives the offset
 for sequence removed during barcode extraction; R2 does not.
+The configured original read length fixes the R1 and R2 cutoff-axis end, so
+low-coverage terminal cycles do not make either read appear shorter.
 
 ### 3.3 Methylation evidence
 
@@ -275,9 +278,10 @@ cutoffs are therefore applied only to the matching conversion class.
 
 ### 4.6 Methylation calling
 
-`06.call.sh` creates per-spot host calls from the pooled BAM, reference FASTA,
-barcode whitelist, and host M-bias cutoff. All whitelist spots are recorded in
-`coverage/spot_manifest.tsv`, including empty spots.
+`06.call.sh` creates per-spot host calls from the pooled BAM (or the persistent
+filtered BAM for SmC), reference FASTA, barcode whitelist, and host M-bias
+cutoff. All whitelist spots are recorded in `coverage/spot_manifest.tsv`,
+including empty spots.
 
 ```text
 coverage/host/<X>/<X>_<Y>.CG.cov
@@ -306,6 +310,8 @@ calls. `SPIKE_CALL_MODE` selects `mito`, `spike`, or `all`.
 
 `07.saturation.sh` selects sufficiently covered spots, estimates unique CpGs at
 subsampling fractions, and fits linear and saturation-curve models.
+For SmC, the lambda-enriched control spot `00_01` is excluded from saturation
+fitting and from all per-spot summary tables, plots, and aggregate spot metrics.
 
 ```text
 dbitm/saturation/

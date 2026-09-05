@@ -112,6 +112,7 @@ fi
 
 infer_target_cutoffs() {
     local label=$1
+    local right_aligned_read=${2:-R1}
     local cutoff_path=$run_output/$label.mbias.cutoffs.tsv
     if [[ -f "$cutoff_path" ]]; then
         echo "[dbitm] M-bias cutoffs already exist, skipping: $cutoff_path"
@@ -123,7 +124,9 @@ infer_target_cutoffs() {
         --mbias-tsv "$run_output/$label.mbias.tsv" \
         --output "$cutoff_path" \
         --r1-original-length "$MBIAS_R1_ORIGINAL_LENGTH" \
+        --right-aligned-read "$right_aligned_read" \
         --rate-tolerance "$MBIAS_CUTOFF_RATE_TOLERANCE" \
+        --min-coverage "$MBIAS_MIN_CYCLE_COVERAGE" \
         >> "$log_path" 2>&1; then
         echo "[dbitm] mbias: cutoff inference failed; see log: $output_dir/mbias.log" >&2
         return 1
@@ -149,6 +152,7 @@ run_mbias_target() {
     local subsample_fraction=$4
     local max_records=$5
     local chromosomes=${6:-}
+    local right_aligned_read=${7:-R1}
     local chrom_args=()
     if [[ -n "$chromosomes" ]]; then
         chrom_args=(--chromosomes "$chromosomes")
@@ -163,6 +167,7 @@ run_mbias_target() {
         echo "[dbitm] dry-run reference: $reference_path"
         echo "[dbitm] dry-run sampling: fraction=$subsample_fraction max-records=$max_records"
         echo "[dbitm] dry-run chromosomes: ${chromosomes:-all}"
+        echo "[dbitm] dry-run right-aligned read: $right_aligned_read"
         return 0
     fi
 
@@ -178,7 +183,7 @@ run_mbias_target() {
     if [[ -f "$target_tsv" && -f "$target_png" ]]; then
         echo "[dbitm] mbias target already exists, skipping: $label"
         echo "[mbias] skip_existing_outputs=$label" >> "$log_path"
-        infer_target_cutoffs "$label"
+        infer_target_cutoffs "$label" "$right_aligned_read"
         return 0
     fi
     if [[ -f "$target_tsv" || -f "$target_png" ]]; then
@@ -199,6 +204,7 @@ run_mbias_target() {
         --max-cycle "$MBIAS_MAX_CYCLE" \
         --min-cycle-coverage "$MBIAS_MIN_CYCLE_COVERAGE" \
         --r1-original-length "$MBIAS_R1_ORIGINAL_LENGTH" \
+        --right-aligned-read "$right_aligned_read" \
         --min-base-quality "$MBIAS_MIN_BASE_QUALITY" \
         --min-mapping-quality "$MBIAS_MIN_MAPPING_QUALITY" \
         "${chrom_args[@]}" \
@@ -206,7 +212,7 @@ run_mbias_target() {
         echo "[dbitm] mbias: target failed ($label); see log: $output_dir/mbias.log" >&2
         return 1
     fi
-    infer_target_cutoffs "$label"
+    infer_target_cutoffs "$label" "$right_aligned_read"
 }
 
 target_count=0
@@ -223,13 +229,18 @@ if [[ "$MBIAS_MODE" == all || "$MBIAS_MODE" == host ]]; then
     host_reference=$(resolve_reference "$host_reference")
     if [[ "$assay" == smc ]]; then
         for conversion_class in watson crick; do
+            right_aligned_read=R1
+            if [[ "$conversion_class" == watson ]]; then
+                right_aligned_read=R2
+            fi
             run_mbias_target \
                 "host.$conversion_class" \
                 "$pooled_dir/pooled.$conversion_class.cb.bam" \
                 "$host_reference" \
                 "$MBIAS_HOST_SUBSAMPLE_FRACTION" \
                 "$MBIAS_HOST_MAX_RECORDS" \
-                "$CALL_CHROMOSOMES"
+                "$CALL_CHROMOSOMES" \
+                "$right_aligned_read"
             target_count=$((target_count + 1))
         done
     else
@@ -264,10 +275,14 @@ if [[ "$MBIAS_MODE" == all || "$MBIAS_MODE" == spike ]]; then
         spike_reference=$(resolve_reference "$spike_reference")
         if [[ "$assay" == smc ]]; then
             for conversion_class in watson crick; do
+                right_aligned_read=R1
+                if [[ "$conversion_class" == watson ]]; then
+                    right_aligned_read=R2
+                fi
                 run_mbias_target \
                     "$spike_name.$conversion_class" \
                     "$pooled_dir/pooled.$conversion_class.$spike_name.bam" \
-                    "$spike_reference" 1 0
+                    "$spike_reference" 1 0 "" "$right_aligned_read"
                 target_count=$((target_count + 1))
             done
         else

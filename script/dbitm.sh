@@ -23,7 +23,10 @@ Execution mode is controlled by RUN_MODE in the config file:
 
 The all step runs/submits (or resumes from --resume):
   fastp -> barcode -> (spike-align + align) -> pool -> mbias -+-> spike-call ---------+
-                                                              +-> call -> saturation -+-> summary -> methscan
+                                                             +-> call -> saturation -+-> summary -> methscan
+
+For SmC analysis, a three-consecutive-unconverted-C filter runs after mbias
+to remove reads with incomplete conversion.
 EOF
     exit "$status"
 }
@@ -40,13 +43,14 @@ declare -A STEP_SCRIPTS=(
     [align]=03.align.sh
     [pool]=04.pool.sh
     [mbias]=05.mbias.sh
+    [smc-filter]=05.1.smc_filter.sh
     [spike-call]=06.spike_call.sh
     [call]=06.call.sh
     [saturation]=07.saturation.sh
     [summary]=08.summary.sh
     [methscan]=09.methscan.sh
 )
-ALL_STEPS=(fastp barcode spike-align align pool mbias spike-call call saturation summary methscan)
+ALL_STEPS=(fastp barcode spike-align align pool mbias smc-filter spike-call call saturation summary methscan)
 
 # ── parse positional arguments ──
 case "${1:-}" in
@@ -64,6 +68,9 @@ case "$assay" in
     taps|taps-v2|emseq|cabernet|smc) ;;
     *) echo "[dbitm] error: unsupported assay: $assay" >&2; usage ;;
 esac
+if [[ "$assay" != smc ]]; then
+    ALL_STEPS=(fastp barcode spike-align align pool mbias spike-call call saturation summary methscan)
+fi
 
 if [[ "$step" != all && -z "${STEP_SCRIPTS[$step]:-}" ]]; then
     echo "[dbitm] error: unsupported step: $step" >&2
@@ -302,12 +309,17 @@ submit_pipeline_hpc() {
         [align]="barcode"
         [pool]="spike-align align"
         [mbias]="pool"
+        [smc-filter]="mbias"
         [spike-call]="mbias"
         [call]="mbias"
         [saturation]="call"
         [summary]="spike-call saturation"
         [methscan]="summary"
     )
+    if [[ "$assay" == smc ]]; then
+        prerequisites[spike-call]="smc-filter"
+        prerequisites[call]="smc-filter"
+    fi
 
     echo "[dbitm] submitting selected pipeline with Slurm dependencies: ${PIPELINE_STEPS[*]}"
     for step_name in "${PIPELINE_STEPS[@]}"; do

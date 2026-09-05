@@ -42,6 +42,8 @@ DEFAULT_FRACTIONS = (
     1.00,
 )
 
+SMC_EXCLUDED_SPOTS = frozenset({"00_01"})
+
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -397,6 +399,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         plot_path = output_dir / "saturation_curve.png"
 
         barcode_c_to_t = args.assay in {"emseq", "cabernet"}
+        excluded_spots = SMC_EXCLUDED_SPOTS if args.assay == "smc" else frozenset()
         print(f"[saturation] assay={args.assay}")
         print(f"[saturation] barcode-c-to-t={str(barcode_c_to_t).lower()}")
         print(f"[saturation] work-dir={work_dir}")
@@ -407,6 +410,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"[saturation] spot-manifest={manifest_path}")
         print(f"[saturation] host-cg-cov={coverage_path}")
         print(f"[saturation] reads-threshold={args.reads_threshold}")
+        print(
+            "[saturation] excluded-spots="
+            + (",".join(sorted(excluded_spots)) if excluded_spots else "none")
+        )
         print(f"[saturation] pred-fraction={args.pred_fraction}")
         print(f"[saturation] linear-r2-threshold={args.linear_r2_threshold}")
         print(f"[saturation] fastp-json={fastp_path}")
@@ -420,7 +427,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         hq_candidates = {
             spot
             for spot, reads in spot_reads.items()
-            if reads > args.reads_threshold
+            if reads > args.reads_threshold and spot not in excluded_spots
         }
         spot_histograms = parse_barcoded_cov_histograms(
             coverage_path, hq_candidates

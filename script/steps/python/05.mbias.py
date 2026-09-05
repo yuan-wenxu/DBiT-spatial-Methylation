@@ -80,8 +80,18 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=150,
         help=(
-            "Original R1 length before barcode removal; R1 cycles are shifted "
-            "back to these original read coordinates. Default: 150."
+            "Original barcode-bearing read length before trimming; cycles for "
+            "--right-aligned-read are shifted back to these original read "
+            "coordinates. Default: 150."
+        ),
+    )
+    parser.add_argument(
+        "--right-aligned-read",
+        choices=("R1", "R2", "none"),
+        default="R1",
+        help=(
+            "Read whose trimmed sequence is the rightmost suffix of the "
+            "original read. Default: R1."
         ),
     )
     parser.add_argument(
@@ -246,13 +256,15 @@ def add_observation(
     methylated: bool,
     max_cycle: int,
     r1_original_length: int,
+    right_aligned_read: str,
 ) -> None:
     read_label = "R1" if record.is_read1 else "R2"
     cycle_offset = 0
-    if record.is_read1 and r1_original_length:
+    if read_label == right_aligned_read and r1_original_length:
         if read_length > r1_original_length:
             raise ValueError(
-                "trimmed R1 length exceeds configured original R1 length: "
+                f"trimmed {read_label} length exceeds configured original "
+                "read length: "
                 f"{read_length} > {r1_original_length}"
             )
         cycle_offset = r1_original_length - read_length
@@ -342,6 +354,7 @@ def count_mbias(
                     methylated,
                     args.max_cycle,
                     args.r1_original_length,
+                    args.right_aligned_read,
                 )
                 observations += 1
 
@@ -446,6 +459,7 @@ def main() -> int:
     print(f"[mbias] max-cycle={args.max_cycle}")
     print(f"[mbias] min-cycle-coverage={args.min_cycle_coverage}")
     print(f"[mbias] r1-original-length={args.r1_original_length or 'trimmed-relative'}")
+    print(f"[mbias] right-aligned-read={args.right_aligned_read}")
     print(f"[mbias] output-tsv={output_tsv}")
     print(f"[mbias] output-png={output_png}")
     if args.dry_run:
