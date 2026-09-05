@@ -10,7 +10,8 @@ Main control script for DBiT-spatial-Methylation pipeline.
 
 Arguments:
   assay          Assay type: taps | taps-v2 | emseq | cabernet | smc
-  step           Pipeline step: fastp | barcode | spike-align | align | pool | mbias | spike-call | call | saturation | summary | methscan | all
+  step           Pipeline step: fastp | barcode | spike-align | align | pool | mbias | smc-filter | spike-call | call | saturation | summary | methscan | all
+                 Note: smc-filter is available only when assay=smc.
   --input PATH   Raw FASTQ directory path
   --config PATH  Optional config file (default: config/dbitm.config.sh)
   --resume STEP  With step=all, start at STEP and run/submit all later steps
@@ -22,8 +23,8 @@ Execution mode is controlled by RUN_MODE in the config file:
   RUN_MODE=hpc     Submit step via sbatch (default)
 
 The all step runs/submits (or resumes from --resume):
-  fastp -> barcode -> (spike-align + align) -> pool -> mbias -+-> spike-call ---------+
-                                                             +-> call -> saturation -+-> summary -> methscan
+  fastp -> barcode -> (spike-align + align) -> pool -> mbias -> [smc-filter] -+-> spike-call ---------+
+                                                                            +-> call -> saturation -+-> summary -> methscan
 
 For SmC analysis, a three-consecutive-unconverted-C filter runs after mbias
 to remove reads with incomplete conversion.
