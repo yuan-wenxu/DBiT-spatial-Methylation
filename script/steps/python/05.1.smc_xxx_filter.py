@@ -36,6 +36,15 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--r2-left-trim", type=int, default=0)
     parser.add_argument("--r2-right-trim", type=int, default=0)
     parser.add_argument(
+        "--chromosomes",
+        default="",
+        help=(
+            "Comma-separated chromosomes to apply the filter to. Records on "
+            "other chromosomes are copied through unchanged. Default: filter "
+            "every chromosome."
+        ),
+    )
+    parser.add_argument(
         "-j",
         "--jobs",
         type=int,
@@ -134,6 +143,12 @@ def has_xxx_pattern(
     return False
 
 
+def selected_chromosomes(raw_list: str) -> Optional[set[str]]:
+    """Return the chromosome set to filter, or None when everything filters."""
+    names = [name.strip() for name in raw_list.split(",") if name.strip()]
+    return set(names) if names else None
+
+
 def validate_args(args: argparse.Namespace) -> None:
     if args.jobs <= 0:
         raise ValueError("--jobs must be greater than zero")
@@ -172,6 +187,7 @@ PartitionResult = tuple[int, str, int, int, int]
 def filter_partition(
     partition_index: int,
     chromosome: Optional[str],
+    evaluate: bool,
     input_path: str,
     reference_path: str,
     part_path: str,
@@ -180,7 +196,7 @@ def filter_partition(
     r2_left: int,
     r2_right: int,
 ) -> PartitionResult:
-    """Filter one reference sequence, or the unplaced tail, into a BAM part."""
+    """Filter one reference sequence, or copy it through, into a BAM part."""
     total = 0
     evaluated = 0
     filtered = 0
@@ -189,15 +205,14 @@ def filter_partition(
     with pysam.AlignmentFile(input_path, "rb") as input_bam, pysam.AlignmentFile(
         part_path, "wb", template=input_bam
     ) as output_bam:
-        if chromosome is None:
-            records = input_bam.fetch("*")
-            reference_sequence = ""
-            fasta = None
-        else:
-            fasta = pysam.FastaFile(reference_path)
-            reference_sequence = fasta.fetch(chromosome).upper()
-            records = input_bam.fetch(chromosome)
-        try:
+        records = (
+            input_bam.fetch("*")
+            if chromosome is None
+            else input_bam.fetch(chromosome)
+        )
+        if evaluate and chromosome is not None:
+            with pysam.FastaFile(reference_path) as fasta:
+                reference_sequence = fasta.fetch(chromosome).upper()
             for record in records:
                 total += 1
                 should_evaluate = (
@@ -218,9 +233,10 @@ def filter_partition(
                         filtered += 1
                         continue
                 output_bam.write(record)
-        finally:
-            if fasta is not None:
-                fasta.close()
+        else:
+            for record in records:
+                total += 1
+                output_bam.write(record)
     return partition_index, label, total, evaluated, filtered
 
 
@@ -241,6 +257,7 @@ def filter_bam(args: argparse.Namespace) -> tuple[int, int, int]:
     )
 
     try:
+        selected = selected_chromosomes(args.chromosomes)
         with pysam.AlignmentFile(input_path, "rb") as input_bam, pysam.FastaFile(
             args.reference
         ) as fasta:
@@ -263,13 +280,30 @@ def filter_bam(args: argparse.Namespace) -> tuple[int, int, int]:
                 raise ValueError(
                     "BAM chromosomes absent from reference: " + ",".join(missing)
                 )
+            unknown = (
+                sorted(selected - reference_names) if selected is not None else []
+            )
+            if unknown:
+                raise ValueError(
+                    "--chromosomes absent from reference: " + ",".join(unknown)
+                )
 
-        partitions: list[tuple[int, Optional[str], Path]] = [
-            (index, chromosome, part_dir / f"{index:06d}.bam")
+        partition_specs: list[tuple[int, Optional[str], bool, Path]] = [
+            (
+                index,
+                chromosome,
+                selected is None or chromosome in selected,
+                part_dir / f"{index:06d}.bam",
+            )
             for index, chromosome in enumerate(chromosomes)
         ]
-        partitions.append(
-            (len(partitions), None, part_dir / f"{len(partitions):06d}.bam")
+        partition_specs.append(
+            (
+                len(partition_specs),
+                None,
+                False,
+                part_dir / f"{len(partition_specs):06d}.bam",
+            )
         )
         worker_args = (
             str(input_path),
@@ -280,12 +314,13 @@ def filter_bam(args: argparse.Namespace) -> tuple[int, int, int]:
             args.r2_right_trim,
         )
         results: list[PartitionResult] = []
-        max_workers = min(args.jobs, len(partitions))
+        max_workers = min(args.jobs, len(partition_specs))
         if max_workers == 1:
-            for partition_index, chromosome, part_path in partitions:
+            for partition_index, chromosome, evaluate, part_path in partition_specs:
                 result = filter_partition(
                     partition_index,
                     chromosome,
+                    evaluate,
                     worker_args[0],
                     worker_args[1],
                     str(part_path),
@@ -308,12 +343,18 @@ def filter_bam(args: argparse.Namespace) -> tuple[int, int, int]:
                         filter_partition,
                         partition_index,
                         chromosome,
+                        evaluate,
                         worker_args[0],
                         worker_args[1],
                         str(part_path),
                         *worker_args[2:],
                     ): chromosome if chromosome is not None else "unplaced"
-                    for partition_index, chromosome, part_path in partitions
+                    for (
+                        partition_index,
+                        chromosome,
+                        evaluate,
+                        part_path,
+                    ) in partition_specs
                 }
                 for future in as_completed(future_to_label):
                     label = future_to_label[future]
@@ -332,7 +373,7 @@ def filter_bam(args: argparse.Namespace) -> tuple[int, int, int]:
                     )
 
         ordered_parts = [
-            str(partitions[result[0]][2]) for result in sorted(results)
+            str(partition_specs[result[0]][3]) for result in sorted(results)
         ]
         pysam.cat(
             "--no-PG",
@@ -370,6 +411,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         f"{args.r1_right_trim} R2={args.r2_left_trim},{args.r2_right_trim}"
     )
     print(f"[smc-xxx-filter] jobs={args.jobs}")
+    selected = selected_chromosomes(args.chromosomes)
+    if selected is None:
+        print("[smc-xxx-filter] chromosomes=all")
+    else:
+        print("[smc-xxx-filter] chromosomes=" + ",".join(sorted(selected)))
     if args.dry_run:
         print("[smc-xxx-filter] dry-run=1")
         return 0

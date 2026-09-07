@@ -164,7 +164,9 @@ CpG, CHG, and CHH observations are treated as one sequence of cytosine states.
 An alignment containing three successive methylated cytosine observations is
 excluded from all CpG and CH calls. The stage applies the same rule to host and
 spike-in inputs and reports evaluated and filtered alignment counts in its
-logs.
+logs. Host BAMs are filtered only on the `CALL_CHROMOSOMES` main chromosomes;
+reads on other contigs are copied through unchanged. Spike-in genomes are
+filtered across all of their contigs.
 
 The output BAM is coordinate sorted like its input and is written together
 with `input.xxx-filtered.bam.bai`.

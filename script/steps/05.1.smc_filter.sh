@@ -44,6 +44,8 @@ if [[ ! "$smc_filter_threads" =~ ^[1-9][0-9]*$ ]]; then
     echo "[dbitm] smc-filter: SMC_FILTER_THREADS must be greater than zero" >&2
     exit 1
 fi
+# Only these host chromosomes get the XXX filter; other contigs pass through.
+host_filter_chromosomes=${CALL_CHROMOSOMES:-}
 
 resolve_reference() {
     local reference_path=$1
@@ -92,9 +94,15 @@ run_target() {
     local bam_path=$2
     local reference_path=$3
     local cutoff_path=$4
+    local filter_chromosomes=$5
     local output_bam=$output_dir/$(basename "$bam_path")
     local target_log=$output_dir/$label.log
     local trims r1_left r1_right r2_left r2_right
+    local -a filter_args=()
+
+    if [[ -n "$filter_chromosomes" ]]; then
+        filter_args+=(--chromosomes "$filter_chromosomes")
+    fi
 
     if [[ ! "$label" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
         echo "[dbitm] smc-filter: invalid target label: $label" >&2
@@ -146,6 +154,7 @@ run_target() {
         --bam "$bam_path" \
         --reference "$reference_path" \
         --output-bam "$output_bam" \
+        "${filter_args[@]}" \
         --r1-left-trim "$r1_left" \
         --r1-right-trim "$r1_right" \
         --r2-left-trim "$r2_left" \
@@ -169,17 +178,22 @@ echo "[dbitm] pooled directory: $pooled_dir"
 echo "[dbitm] M-bias directory: $cutoff_dir"
 echo "[dbitm] output directory: $output_dir"
 echo "[dbitm] filter processes per BAM: $smc_filter_threads"
+echo "[dbitm] host filter chromosomes: ${host_filter_chromosomes:-all}"
 echo "[dbitm] config: $config_file"
 
 if [[ "$dry_run" == false ]]; then
     mkdir -p "$output_dir"
+fi
+if [[ -z "$host_filter_chromosomes" ]]; then
+    echo "[dbitm] smc-filter: CALL_CHROMOSOMES is empty; filtering every host chromosome" >&2
 fi
 for conversion_class in watson crick; do
     run_target \
         "host.$conversion_class" \
         "$pooled_dir/pooled.$conversion_class.cb.bam" \
         "$host_reference" \
-        "$cutoff_dir/host.$conversion_class.mbias.cutoffs.tsv"
+        "$cutoff_dir/host.$conversion_class.mbias.cutoffs.tsv" \
+        "$host_filter_chromosomes"
 done
 
 spike_call_mode=${SPIKE_CALL_MODE:-all}
@@ -211,7 +225,8 @@ if [[ "$spike_call_mode" == all || "$spike_call_mode" == spike ]]; then
                 "$spike_name.$conversion_class" \
                 "$pooled_dir/pooled.$conversion_class.$spike_name.bam" \
                 "$spike_reference" \
-                "$cutoff_dir/$spike_name.$conversion_class.mbias.cutoffs.tsv"
+                "$cutoff_dir/$spike_name.$conversion_class.mbias.cutoffs.tsv" \
+                ""
         done
     done
 fi
