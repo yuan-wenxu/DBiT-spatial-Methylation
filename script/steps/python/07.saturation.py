@@ -58,7 +58,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument("--output-dir")
     parser.add_argument("--cb-tag", default="CB")
-    parser.add_argument("--reads-threshold", type=float, default=10_000.0)
+    parser.add_argument("--reads-threshold", type=float, default=1_000_000.0)
     parser.add_argument("--pred-fraction", type=float, default=2.0)
     parser.add_argument("--linear-r2-threshold", type=float, default=0.99)
     parser.add_argument("--fastp-json")

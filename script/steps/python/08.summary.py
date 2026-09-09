@@ -502,8 +502,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     manifest_path = coverage_dir / "spot_manifest.tsv"
     if args.assay == "smc":
         host_bams = [
-            work_dir / "pooled" / "pooled.watson.cb.bam",
-            work_dir / "pooled" / "pooled.crick.cb.bam",
+            work_dir / "smc_xxx_filter" / "pooled.watson.cb.bam",
+            work_dir / "smc_xxx_filter" / "pooled.crick.cb.bam",
         ]
     else:
         host_bams = [work_dir / "pooled" / "pooled.cb.bam"]
@@ -624,8 +624,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         for spike_name in spike_names:
             if args.assay == "smc":
                 spike_bams = [
-                    work_dir / "pooled" / f"pooled.watson.{spike_name}.bam",
-                    work_dir / "pooled" / f"pooled.crick.{spike_name}.bam",
+                    work_dir
+                    / "smc_xxx_filter"
+                    / f"pooled.watson.{spike_name}.bam",
+                    work_dir
+                    / "smc_xxx_filter"
+                    / f"pooled.crick.{spike_name}.bam",
                 ]
             else:
                 spike_bams = [
