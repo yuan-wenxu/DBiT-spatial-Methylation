@@ -103,7 +103,8 @@ CALL_MAX_DEPTH=${CALL_MAX_DEPTH:-1000000}
 CALL_BATCH_SIZE=${CALL_BATCH_SIZE:-10000000}
 CALL_JOBS=${CALL_JOBS:-16}
 
-# CpG saturation analysis configuration.
+# CpG saturation analysis configuration. The reads threshold is used as a
+# fallback when automatic inference cannot find a well-separated cutoff.
 SATURATION_READS_THRESHOLD=${SATURATION_READS_THRESHOLD:-1000000}
 SATURATION_PRED_FRACTION=${SATURATION_PRED_FRACTION:-2.0}
 SATURATION_LINEAR_R2_THRESHOLD=${SATURATION_LINEAR_R2_THRESHOLD:-0.99}

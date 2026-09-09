@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gzip
 import json
 import math
 import os
@@ -43,6 +44,11 @@ DEFAULT_FRACTIONS = (
 )
 
 SMC_EXCLUDED_SPOTS = frozenset({"00_01"})
+MIN_THRESHOLD_INFERENCE_SPOTS = 100
+MIN_THRESHOLD_CLASS_SPOTS = 10
+MIN_THRESHOLD_RETAINED_SPOTS = 100
+MIN_THRESHOLD_CLASS_FRACTION = 0.01
+MIN_THRESHOLD_SEPARATION = 0.60
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
@@ -58,7 +64,15 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument("--output-dir")
     parser.add_argument("--cb-tag", default="CB")
-    parser.add_argument("--reads-threshold", type=float, default=1_000_000.0)
+    parser.add_argument(
+        "--reads-threshold",
+        type=float,
+        default=1_000_000.0,
+        help=(
+            "Fallback reads threshold used when automatic inference fails. "
+            "Default: 1000000."
+        ),
+    )
     parser.add_argument("--pred-fraction", type=float, default=2.0)
     parser.add_argument("--linear-r2-threshold", type=float, default=0.99)
     parser.add_argument("--fastp-json")
@@ -126,6 +140,68 @@ def count_spot_reads(
                 if spot is not None:
                     counts[spot] += 1
     return dict(counts)
+
+
+def infer_reads_threshold(
+    spot_reads: dict[str, int],
+    excluded_spots: frozenset[str] = frozenset(),
+) -> tuple[Optional[int], Optional[float]]:
+    log_reads = sorted(
+        math.log10(reads + 1.0)
+        for spot, reads in spot_reads.items()
+        if reads > 0 and spot not in excluded_spots
+    )
+    value_count = len(log_reads)
+    if value_count < MIN_THRESHOLD_INFERENCE_SPOTS:
+        return None, None
+
+    total = sum(log_reads)
+    mean = total / value_count
+    total_sum_squares = sum((value - mean) ** 2 for value in log_reads)
+    if total_sum_squares <= 0:
+        return None, None
+
+    minimum_class_size = max(
+        MIN_THRESHOLD_CLASS_SPOTS,
+        math.ceil(value_count * MIN_THRESHOLD_CLASS_FRACTION),
+    )
+    left_sum = 0.0
+    best_between_sum_squares = -1.0
+    best_split: Optional[int] = None
+    for index in range(value_count - 1):
+        left_sum += log_reads[index]
+        left_count = index + 1
+        right_count = value_count - left_count
+        if (
+            left_count < minimum_class_size
+            or right_count < MIN_THRESHOLD_RETAINED_SPOTS
+        ):
+            continue
+        if log_reads[index] == log_reads[index + 1]:
+            continue
+        left_mean = left_sum / left_count
+        right_mean = (total - left_sum) / right_count
+        between_sum_squares = (
+            left_count
+            * right_count
+            / value_count
+            * (left_mean - right_mean) ** 2
+        )
+        if between_sum_squares > best_between_sum_squares:
+            best_between_sum_squares = between_sum_squares
+            best_split = index
+
+    if best_split is None:
+        return None, None
+    separation = best_between_sum_squares / total_sum_squares
+    if separation < MIN_THRESHOLD_SEPARATION:
+        return None, separation
+
+    log_threshold = (
+        log_reads[best_split] + log_reads[best_split + 1]
+    ) / 2.0
+    threshold = max(1, int(round(10**log_threshold - 1.0)))
+    return threshold, separation
 
 
 def parse_barcoded_cov_histograms(
@@ -254,6 +330,9 @@ SUMMARY_FIELDS = [
     "hq_spot_count",
 ]
 
+HISTOGRAM_FIELDS = ["spot", "reads", "depth", "site_count"]
+THRESHOLD_FIELDS = ["reads_threshold"]
+
 
 def write_summary(path: Path, row: dict[str, str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -268,6 +347,124 @@ def write_summary(path: Path, row: dict[str, str]) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def write_reads_threshold(path: Path, threshold: float) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    try:
+        with temporary.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=THRESHOLD_FIELDS,
+                delimiter="\t",
+            )
+            writer.writeheader()
+            writer.writerow({"reads_threshold": f"{threshold:.12g}"})
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def read_reads_threshold(path: Path) -> float:
+    if not path.is_file():
+        raise FileNotFoundError(f"reads threshold file not found: {path}")
+    with path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        if reader.fieldnames is None or "reads_threshold" not in reader.fieldnames:
+            raise ValueError(
+                f"reads threshold file lacks reads_threshold column: {path}"
+            )
+        row = next(reader, None)
+    if row is None:
+        raise ValueError(f"reads threshold file contains no data row: {path}")
+    raw_threshold = (row.get("reads_threshold") or "").strip()
+    try:
+        threshold = float(raw_threshold)
+    except ValueError as error:
+        raise ValueError(
+            f"invalid reads threshold in {path}: {raw_threshold or 'empty'}"
+        ) from error
+    if not math.isfinite(threshold) or threshold <= 0:
+        raise ValueError(f"reads threshold must be > 0 in {path}: {raw_threshold}")
+    return threshold
+
+
+def write_spot_histograms(
+    path: Path,
+    spot_reads: dict[str, int],
+    histograms: dict[str, dict[int, int]],
+    excluded_spots: frozenset[str] = frozenset(),
+) -> tuple[int, int]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    spot_count = 0
+    row_count = 0
+    try:
+        with gzip.open(temporary, "wt", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=HISTOGRAM_FIELDS,
+                delimiter="\t",
+            )
+            writer.writeheader()
+            for spot in sorted(histograms):
+                if spot in excluded_spots:
+                    continue
+                histogram = histograms[spot]
+                if not histogram:
+                    continue
+                spot_count += 1
+                for depth in sorted(histogram):
+                    writer.writerow(
+                        {
+                            "spot": spot,
+                            "reads": spot_reads.get(spot, 0),
+                            "depth": depth,
+                            "site_count": histogram[depth],
+                        }
+                    )
+                    row_count += 1
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return spot_count, row_count
+
+
+def read_spot_histograms(
+    path: Path,
+) -> tuple[dict[str, int], dict[str, dict[int, int]]]:
+    if not path.is_file():
+        raise FileNotFoundError(f"spot depth histogram not found: {path}")
+    spot_reads: dict[str, int] = {}
+    histograms: dict[str, dict[int, int]] = {}
+    with gzip.open(path, "rt", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        required = set(HISTOGRAM_FIELDS)
+        if reader.fieldnames is None or not required.issubset(reader.fieldnames):
+            raise ValueError(f"spot depth histogram lacks required columns: {path}")
+        for line_number, row in enumerate(reader, start=2):
+            spot = (row.get("spot") or "").strip()
+            try:
+                reads = int(row.get("reads") or "")
+                depth = int(row.get("depth") or "")
+                site_count = int(row.get("site_count") or "")
+            except ValueError as error:
+                raise ValueError(
+                    f"invalid histogram value at {path}:{line_number}"
+                ) from error
+            if not spot or reads < 0 or depth <= 0 or site_count <= 0:
+                raise ValueError(
+                    f"invalid histogram row at {path}:{line_number}"
+                )
+            previous_reads = spot_reads.setdefault(spot, reads)
+            if previous_reads != reads:
+                raise ValueError(
+                    f"inconsistent reads for spot {spot} at {path}:{line_number}"
+                )
+            histogram = histograms.setdefault(spot, {})
+            histogram[depth] = histogram.get(depth, 0) + site_count
+    return spot_reads, histograms
+
+
 def save_figure(figure: plt.Figure, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}")
@@ -277,6 +474,62 @@ def save_figure(figure: plt.Figure, path: Path) -> None:
     finally:
         plt.close(figure)
         temporary.unlink(missing_ok=True)
+
+
+def write_reads_rank_plot(
+    path: Path,
+    spot_reads: dict[str, int],
+    threshold: float,
+    threshold_source: str,
+    excluded_spots: frozenset[str] = frozenset(),
+) -> None:
+    ranked_reads = sorted(
+        (
+            reads
+            for spot, reads in spot_reads.items()
+            if reads > 0 and spot not in excluded_spots
+        ),
+        reverse=True,
+    )
+    figure, axis = plt.subplots(figsize=(5, 4))
+    if not ranked_reads:
+        axis.axis("off")
+        axis.text(
+            0.5,
+            0.5,
+            "No CB-tagged reads were assigned to spots",
+            ha="center",
+            va="center",
+            fontsize=12,
+        )
+    else:
+        ranks = list(range(1, len(ranked_reads) + 1))
+        retained_count = sum(reads > threshold for reads in ranked_reads)
+        axis.plot(ranks, ranked_reads, color="steelblue", linewidth=1.8)
+        axis.axhline(
+            threshold,
+            color="firebrick",
+            linestyle="--",
+            linewidth=1.6,
+            label=f"Threshold: {threshold:g}",
+        )
+        axis.set_yscale("log")
+        axis.set_xlabel("Spot rank (highest reads first)", fontsize=10)
+        axis.set_ylabel("Reads per spot", fontsize=10)
+        axis.grid(True, alpha=0.3)
+        axis.legend(loc="best")
+        axis.text(
+            0.98,
+            0.04,
+            f"Spots above threshold: {retained_count}",
+            transform=axis.transAxes,
+            ha="right",
+            va="bottom",
+            fontsize=10,
+        )
+    axis.set_title(f"Reads per spot rank ({threshold_source})", fontsize=12)
+    figure.tight_layout()
+    save_figure(figure, path)
 
 
 def write_empty_plot(path: Path, message: str) -> None:
@@ -397,6 +650,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         output_dir = Path(args.output_dir) if args.output_dir else work_dir / "saturation"
         summary_path = output_dir / "saturation_summary.tsv"
         plot_path = output_dir / "saturation_curve.png"
+        histogram_path = output_dir / "per_spot_cpg_depth_histogram.tsv.gz"
+        threshold_path = output_dir / "reads_threshold.tsv"
+        reads_rank_plot_path = output_dir / "reads_per_spot_rank.png"
 
         barcode_c_to_t = args.assay in {"emseq", "cabernet"}
         excluded_spots = SMC_EXCLUDED_SPOTS if args.assay == "smc" else frozenset()
@@ -409,7 +665,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         print(f"[saturation] spot-manifest={manifest_path}")
         print(f"[saturation] host-cg-cov={coverage_path}")
-        print(f"[saturation] reads-threshold={args.reads_threshold}")
+        print(f"[saturation] configured-reads-threshold={args.reads_threshold}")
+        print(f"[saturation] reads-threshold-file={threshold_path}")
         print(
             "[saturation] excluded-spots="
             + (",".join(sorted(excluded_spots)) if excluded_spots else "none")
@@ -417,21 +674,85 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"[saturation] pred-fraction={args.pred_fraction}")
         print(f"[saturation] linear-r2-threshold={args.linear_r2_threshold}")
         print(f"[saturation] fastp-json={fastp_path}")
+        print(f"[saturation] spot-depth-histogram={histogram_path}")
+        print(f"[saturation] reads-rank-plot={reads_rank_plot_path}")
         print(f"[saturation] output-dir={output_dir}")
         if args.dry_run:
+            if threshold_path.is_file():
+                print(
+                    "[saturation] reads-threshold="
+                    f"{read_reads_threshold(threshold_path):g}"
+                )
+                print("[saturation] reads-threshold-source=file")
+            else:
+                print("[saturation] reads-threshold-source=pending-auto-inference")
+            print(
+                "[saturation] spot-depth-histogram-source="
+                + ("cache" if histogram_path.is_file() else "pending-generation")
+            )
             print("[saturation] dry-run=1")
             return 0
 
-        cb_to_spot = load_cb_to_spot(manifest_path, c_to_t=barcode_c_to_t)
-        spot_reads = count_spot_reads(bam_paths, args.cb_tag, cb_to_spot)
+        if histogram_path.is_file():
+            spot_reads, spot_histograms = read_spot_histograms(histogram_path)
+            histogram_source = "cache"
+            histogram_spot_count = len(spot_histograms)
+            histogram_row_count = sum(
+                len(histogram) for histogram in spot_histograms.values()
+            )
+        else:
+            cb_to_spot = load_cb_to_spot(manifest_path, c_to_t=barcode_c_to_t)
+            all_spot_reads = count_spot_reads(bam_paths, args.cb_tag, cb_to_spot)
+            if not coverage_path.is_file():
+                raise FileNotFoundError(f"host CG coverage not found: {coverage_path}")
+            included_spots = set(cb_to_spot.values()) - excluded_spots
+            spot_histograms = parse_barcoded_cov_histograms(
+                coverage_path, included_spots
+            )
+            spot_reads = {
+                spot: all_spot_reads.get(spot, 0) for spot in spot_histograms
+            }
+            histogram_spot_count, histogram_row_count = write_spot_histograms(
+                histogram_path,
+                spot_reads,
+                spot_histograms,
+            )
+            histogram_source = "generated"
+        print(f"[saturation] spot-depth-histogram-source={histogram_source}")
+        print(f"[saturation] histogram-spot-count={histogram_spot_count}")
+        print(f"[saturation] histogram-row-count={histogram_row_count}")
+        threshold_source = "file"
+        if not threshold_path.is_file():
+            inferred_threshold, separation = infer_reads_threshold(
+                spot_reads,
+                excluded_spots,
+            )
+            if inferred_threshold is None:
+                selected_threshold = args.reads_threshold
+                threshold_source = "config fallback"
+                print("[saturation] warning=reads_threshold_inference_failed")
+                if separation is not None:
+                    print(f"[saturation] threshold-separation={separation:.6f}")
+            else:
+                selected_threshold = float(inferred_threshold)
+                threshold_source = "automatic inference"
+                print(f"[saturation] threshold-separation={separation:.6f}")
+            write_reads_threshold(threshold_path, selected_threshold)
+        reads_threshold = read_reads_threshold(threshold_path)
+        print(f"[saturation] reads-threshold={reads_threshold:g}")
+        print(f"[saturation] reads-threshold-source={threshold_source}")
+        write_reads_rank_plot(
+            reads_rank_plot_path,
+            spot_reads,
+            reads_threshold,
+            threshold_source,
+            excluded_spots,
+        )
         hq_candidates = {
             spot
             for spot, reads in spot_reads.items()
-            if reads > args.reads_threshold and spot not in excluded_spots
+            if reads > reads_threshold and spot not in excluded_spots
         }
-        spot_histograms = parse_barcoded_cov_histograms(
-            coverage_path, hq_candidates
-        )
         hq_spots = sorted(hq_candidates & spot_histograms.keys())
         sequencing_gbp = load_sequencing_gbp(fastp_path)
         if sequencing_gbp is None:

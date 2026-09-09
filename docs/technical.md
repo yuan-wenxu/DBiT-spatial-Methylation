@@ -315,10 +315,32 @@ fitting and from all per-spot summary tables, plots, and aggregate spot metrics.
 
 ```text
 dbitm/saturation/
+├── per_spot_cpg_depth_histogram.tsv.gz
+├── reads_per_spot_rank.png
+├── reads_threshold.tsv
 ├── saturation_curve.png
 ├── saturation_summary.tsv
 └── saturation.log
 ```
+
+On the first run, the saturation stage infers a sample-specific reads threshold
+by applying two-class Otsu separation to log-transformed positive per-spot read
+counts. If the distribution is too small or insufficiently separated, it uses
+`SATURATION_READS_THRESHOLD` as the fallback. The selected value is written to
+`reads_threshold.tsv` and then used for spot selection. Later runs read this
+file instead of inferring the threshold again, so editing its single data value
+provides a persistent manual override. `reads_per_spot_rank.png` marks the value
+used by the run and reports how many spots exceed it.
+
+The compressed histogram contains `spot`, `reads`, `depth`, and `site_count`
+for every non-control spot with CpG coverage. It is written before applying the
+configured reads threshold, so it retains the information needed to evaluate
+alternative spot-selection thresholds without storing one row per CpG site.
+When this file already exists, later saturation runs load both the per-spot read
+counts and CpG depth histograms from it, skipping the BAM and `host.CG.cov`
+scans. Remove the file only when those upstream inputs have changed and the
+cache needs to be regenerated. Remove `reads_threshold.tsv` as well when the
+threshold should be inferred again instead of retaining the saved override.
 
 The summary records the configured multiplier in `prediction_fraction` and
 the corresponding estimate in `predicted_median_unique_cpgs`.
