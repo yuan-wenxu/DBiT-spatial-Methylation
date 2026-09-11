@@ -12,7 +12,8 @@ Arguments:
   assay          Assay type: taps | taps-v2 | emseq | cabernet | smc
   step           Pipeline step: fastp | barcode | spike-align | align | pool | mbias | smc-filter | spike-call | call | saturation | summary | methscan | all
                  Note: smc-filter is available only when assay=smc.
-  --input PATH   Raw FASTQ directory path
+  tools          Standalone tool: image (not included in all)
+  --input PATH   Raw FASTQ directory path; for image, the full-resolution image
   --config PATH  Optional config file (default: config/dbitm.config.sh)
   --resume STEP  With step=all, start at STEP and run/submit all later steps
   --dry-run      Validate and print the execution plan without writing outputs
@@ -36,6 +37,7 @@ SCRIPT_PATH=$(readlink -f "${BASH_SOURCE[0]}") || exit 1
 SCRIPT_DIR=$(cd "$(dirname "$SCRIPT_PATH")" && pwd) || exit 1
 REPO_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
 STEPS_DIR="$SCRIPT_DIR/steps"
+TOOLS_DIR="$SCRIPT_DIR/tools"
 
 declare -A STEP_SCRIPTS=(
     [fastp]=01.fastp.sh
@@ -50,6 +52,7 @@ declare -A STEP_SCRIPTS=(
     [saturation]=07.saturation.sh
     [summary]=08.summary.sh
     [methscan]=09.methscan.sh
+    [image]=image.sh
 )
 ALL_STEPS=(fastp barcode spike-align align pool mbias smc-filter spike-call call saturation summary methscan)
 
@@ -75,7 +78,8 @@ fi
 
 if [[ "$step" != all && -z "${STEP_SCRIPTS[$step]:-}" ]]; then
     echo "[dbitm] error: unsupported step: $step" >&2
-    echo "[dbitm] available steps: ${ALL_STEPS[*]} all" >&2
+    echo "[dbitm] available pipeline steps: ${ALL_STEPS[*]} all" >&2
+    echo "[dbitm] available tools: image" >&2
     usage
 fi
 
@@ -142,7 +146,12 @@ if [[ -z "$input" ]]; then
     echo "[dbitm] error: --input is required" >&2
     usage
 fi
-if [[ ! -d "$input" ]]; then
+if [[ "$step" == image ]]; then
+    if [[ ! -f "$input" ]]; then
+        echo "[dbitm] error: input image not found: $input" >&2
+        exit 1
+    fi
+elif [[ ! -d "$input" ]]; then
     echo "[dbitm] error: input directory not found: $input" >&2
     exit 1
 fi
@@ -186,6 +195,10 @@ echo "[dbitm] run mode: $RUN_MODE"
 
 get_step_script() {
     local step_name=$1
+    if [[ "$step_name" == image ]]; then
+        printf '%s/%s\n' "$TOOLS_DIR" "${STEP_SCRIPTS[$step_name]}"
+        return
+    fi
     printf '%s/%s\n' "$STEPS_DIR" "${STEP_SCRIPTS[$step_name]}"
 }
 

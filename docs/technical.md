@@ -38,6 +38,12 @@ M-bias; `spike-call` and `call` can then run concurrently from its outputs.
 
 The source code is authoritative if it differs from this document.
 
+Standalone tools are not included in `all`:
+
+| Tool | Entry point | Purpose |
+|---|---|---|
+| `image` | `script/tools/image.sh` | Generate image-derived per-spot tissue positions |
+
 ## 2. Installation and use
 
 The project uses Pixi. Install the command-line entry point with:
@@ -440,6 +446,36 @@ The Python converter can also be run directly on an existing MethSCAn matrix:
 pixi run -e default python script/steps/python/09.dense_to_10x.py \
     /path/to/methylation_fractions.csv.gz /path/to/output/10x
 ```
+
+### 4.10 Image segmentation
+
+The standalone `image` tool accepts a full-resolution image rather than a
+FASTQ directory and reads an adjacent `meth-mask.png`. The assay-specific
+barcode whitelist determines both grid dimensions; spot length, interval, and
+pixel size reuse the `SUMMARY_FRAME_*` settings so image positions match the
+registration frame. Its segmentation implementation is under
+`script/tools/python/image_segment.py` and uses the same algorithm as the
+DBiT-spatial-DARLIN image workflow.
+
+```bash
+dbitm taps image --input /path/to/WT-brain-S22.png
+```
+
+Results are isolated from other image workflows:
+
+```text
+image/meth-image/
+├── meth-fullres_grayscale.png
+├── meth-tissue_mask.png
+├── meth-tissue_positions.tsv.gz
+└── meth-seg.log
+```
+
+The position table contains every spot with `barcode`, `in_tissue`,
+`array_row`, `array_col`, `pxl_row_in_fullres`, and `pxl_col_in_fullres`.
+Barcode sequences use barcode2+barcode1 order, with barcode1 mapped to rows and
+barcode2 mapped to columns. This tool is not part of `all` because its input is
+an image instead of the raw FASTQ directory.
 
 ## 5. Output and scratch behavior
 
