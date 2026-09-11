@@ -24,6 +24,7 @@ numpy = ">=1.25.2,<2"
 pandas = ">=1.2.3,<2"
 llvmlite = "*"
 statsmodels = ">=0.14.6,<0.15"
+pillow = ">=12.3.0,<13"
 
 [pypi-dependencies]
 methscan = { git = "https://github.com/yuan-wenxu/MethSCAn.git", tag = "v2.0.1" }

@@ -28,13 +28,13 @@ linker-BC:   ATCCACGTGCTTGAGCGCGCTGCATACTTG
 insert-left: TGCAGTCGTGCCATGAGATGTGTATAAGAGACAG
 ```
 
-The order written to FASTQ headers is `barcode1+barcode2`, or barcode A
-followed by barcode B. This is intentionally the reverse of their physical
-left-to-right order around linker-BC:
+The order written to FASTQ headers is `barcode2+barcode1`, or barcode B
+followed by barcode A. This matches their physical left-to-right order around
+linker-BC:
 
 ```text
 physical read:  barcode2 | linker-BC | barcode1
-FASTQ header:   barcode1+barcode2
+FASTQ header:   barcode2+barcode1
 ```
 
 ## Why linker2 is not searched separately
@@ -174,7 +174,7 @@ with `input.xxx-filtered.bam.bai`.
 When both barcodes are available, the read name is annotated as:
 
 ```text
-@barcode1+barcode2:W|C|U|D:original_read_name
+@barcode2+barcode1:W|C|U|D:original_read_name
 ```
 
 `W`, `C`, `U`, and `D` mean Watson, Crick, ambiguous, and discarded,

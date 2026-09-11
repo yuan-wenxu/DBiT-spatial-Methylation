@@ -393,7 +393,7 @@ def annotate_header(
 ) -> str:
     parts = header.split(" ", 1)
     first = parts[0].removeprefix("@")
-    annotated = f"@{barcode1}+{barcode2}:{strand}:{first}"
+    annotated = f"@{barcode2}+{barcode1}:{strand}:{first}"
     return annotated if len(parts) == 1 else f"{annotated} {parts[1]}"
 
 

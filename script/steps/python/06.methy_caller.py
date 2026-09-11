@@ -250,14 +250,15 @@ def load_barcode_whitelist(
 def spot_id_from_cb(
     cb: str, barcode_map: BarcodeMap, barcode_length: int
 ) -> str:
+    """Map a barcode2+barcode1 CB tag to a row_column spot ID."""
     if "+" in cb:
         barcodes = cb.split("+")
         if len(barcodes) != 2:
             raise ValueError(
                 f"CB tag '{cb}' must contain exactly two barcodes"
             )
-        barcode1, barcode2 = barcodes
-        if len(barcode1) != barcode_length or len(barcode2) != barcode_length:
+        barcode2, barcode1 = barcodes
+        if len(barcode2) != barcode_length or len(barcode1) != barcode_length:
             raise ValueError(
                 f"CB tag '{cb}' contains barcodes with unexpected lengths; "
                 f"expected {barcode_length}+{barcode_length} bases"
@@ -269,19 +270,19 @@ def spot_id_from_cb(
                 f"CB tag '{cb}' has length {len(cb)}; "
                 f"expected {expected_length} without a separator"
             )
-        barcode1 = cb[:barcode_length]
-        barcode2 = cb[barcode_length:]
+        barcode2 = cb[:barcode_length]
+        barcode1 = cb[barcode_length:]
 
     barcode1 = barcode1.upper()
     barcode2 = barcode2.upper()
     try:
-        index1 = barcode_map[barcode1]
-        index2 = barcode_map[barcode2]
+        row_index = barcode_map[barcode1]
+        column_index = barcode_map[barcode2]
     except KeyError as exc:
         raise ValueError(
             f"CB tag '{cb}' contains a barcode absent from the whitelist"
         ) from exc
-    return f"{index1}_{index2}"
+    return f"{row_index}_{column_index}"
 
 
 def write_spot_manifest(
@@ -292,11 +293,11 @@ def write_spot_manifest(
             "spot_id\tbarcode1_index\tbarcode2_index\t"
             "barcode1\tbarcode2\traw_cb\n"
         )
-        for index1, barcode1 in entries:
-            for index2, barcode2 in entries:
+        for row_index, barcode1 in entries:
+            for column_index, barcode2 in entries:
                 handle.write(
-                    f"{index1}_{index2}\t{index1}\t{index2}\t"
-                    f"{barcode1}\t{barcode2}\t{barcode1}+{barcode2}\n"
+                    f"{row_index}_{column_index}\t{row_index}\t{column_index}\t"
+                    f"{barcode1}\t{barcode2}\t{barcode2}+{barcode1}\n"
                 )
 
 

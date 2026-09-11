@@ -62,6 +62,7 @@ raw_abs=$(realpath "$raw_path")
 final_dir=$(dirname "$raw_abs")/dbitm
 coverage_dir=$final_dir/coverage/host
 output_dir=$final_dir/methscan
+converter=$SCRIPT_DIR/python/09.dense_to_10x.py
 
 context_mode=${CALL_CONTEXT_MODE}
 case "$context_mode" in
@@ -118,6 +119,8 @@ if [[ "$dry_run" == true ]]; then
         echo "[dbitm] planned command: methscan smooth $context_output/filter"
         echo "[dbitm] planned command: methscan scan $context_output/filter -> $context_output/VMRs.bed"
         echo "[dbitm] planned command: methscan matrix $context_output/VMRs.bed -> $context_output/matrix"
+        echo "[dbitm] planned conversion: $context_output/matrix/methylation_fractions.csv.gz -> $context_output/matrix/10x/methylation_fractions"
+        echo "[dbitm] planned conversion: $context_output/matrix/mean_shrunken_residuals.csv.gz -> $context_output/matrix/10x/mean_shrunken_residuals"
     done
     [[ -z ${SCRATCH_ROOT:-} ]] || echo "[dbitm] planned scratch root: $SCRATCH_ROOT"
     echo "[dbitm] dry-run: no files will be written"
@@ -192,6 +195,13 @@ for methscan_context in "${methscan_contexts[@]}"; do
         methscan matrix "$vmrs_bed" "$filtered_dir" "$matrix_dir" \
         --threads "$methscan_threads" \
         2>&1 | tee -a "$methscan_log"
+    for matrix_name in methylation_fractions mean_shrunken_residuals; do
+        pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default \
+            python "$converter" \
+            "$matrix_dir/$matrix_name.csv.gz" \
+            "$matrix_dir/10x/$matrix_name" \
+            2>&1 | tee -a "$methscan_log"
+    done
 done
 
 if [[ "$use_scratch" == true ]]; then
@@ -200,5 +210,6 @@ if [[ "$use_scratch" == true ]]; then
 fi
 for methscan_context in "${methscan_contexts[@]}"; do
     echo "[dbitm] MethSCAn $methscan_context matrix result: $output_dir/$methscan_context/matrix"
+    echo "[dbitm] MethSCAn $methscan_context 10x result: $output_dir/$methscan_context/matrix/10x"
 done
 echo "====== dbitm MethSCAn matrices finished ======"

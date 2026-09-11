@@ -180,7 +180,7 @@ def annotate_header(header: str, barcode1: str, barcode2: str) -> str:
     if not header.startswith("@"):
         raise ValueError(f"invalid FASTQ header: {header}")
     parts = header.split(" ", 1)
-    parts[0] = f"@{barcode1}+{barcode2}:{parts[0][1:]}"
+    parts[0] = f"@{barcode2}+{barcode1}:{parts[0][1:]}"
     return parts[0] if len(parts) == 1 else f"{parts[0]} {parts[1]}"
 
 

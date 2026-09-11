@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gzip
 import json
 import math
 import os
@@ -24,11 +25,13 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pysam
+from PIL import Image, ImageDraw
 
 
 VALID_FLAGS = {83, 99, 147, 163}
 CH_CONTEXTS = ("ca", "cc", "ct")
 SMC_EXCLUDED_SPOTS = frozenset({"00_01"})
+FRAME_BORDER_COLOR = "#D55E00"
 CONTEXT_SPECS = {
     "cg": {
         "suffix": "CG",
@@ -88,6 +91,30 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         help="Coverage contexts to summarize; ch expands to CA, CC, and CT (default: cg).",
     )
     parser.add_argument("--spike-in-name", action="append", default=[])
+    parser.add_argument(
+        "--barcode-whitelist",
+        required=True,
+        type=Path,
+        help="Barcode whitelist used to infer the square chip dimensions.",
+    )
+    parser.add_argument(
+        "--frame-spot-length",
+        type=int,
+        default=50,
+        help="Registration-frame spot side length in micrometers (default: 50).",
+    )
+    parser.add_argument(
+        "--frame-interval",
+        type=int,
+        default=50,
+        help="Registration-frame gap between spots in micrometers (default: 50).",
+    )
+    parser.add_argument(
+        "--frame-pixel-length",
+        type=float,
+        default=0.294,
+        help="Registration-frame pixel size in micrometers (default: 0.294).",
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
 
@@ -188,7 +215,7 @@ def load_spot_manifest(
 ) -> tuple[dict[str, tuple[str, str]], dict[str, str]]:
     if not path.is_file():
         raise FileNotFoundError(f"spot manifest not found: {path}")
-    coordinates: dict[str, tuple[str, str]] = {}
+    positions: dict[str, tuple[str, str]] = {}
     cb_to_spot: dict[str, str] = {}
     with path.open(encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle, delimiter="\t")
@@ -200,17 +227,17 @@ def load_spot_manifest(
             raw_cb = (row.get("raw_cb") or "").strip().upper()
             if not spot or not raw_cb:
                 continue
-            x_value = to_int(row.get("barcode1_index"))
-            y_value = to_int(row.get("barcode2_index"))
-            if x_value is None or y_value is None:
+            row_value = to_int(row.get("barcode1_index"))
+            column_value = to_int(row.get("barcode2_index"))
+            if row_value is None or column_value is None:
                 continue
-            coordinates[spot] = (str(x_value), str(y_value))
+            positions[spot] = (str(row_value), str(column_value))
             lookup_cb = raw_cb.replace("C", "T") if c_to_t else raw_cb
             cb_to_spot[lookup_cb] = spot
             cb_to_spot[lookup_cb.replace("+", "")] = spot
-    if not coordinates:
+    if not positions:
         raise ValueError(f"spot manifest contains no usable entries: {path}")
-    return coordinates, cb_to_spot
+    return positions, cb_to_spot
 
 
 def is_unique_mapped(record: pysam.AlignedSegment, minimum_mapq: int) -> bool:
@@ -313,11 +340,11 @@ def parse_barcoded_reads(path: Path) -> Optional[int]:
 def summarize_spots(
     context_cov_paths: dict[str, Path],
     spot_counts: dict[str, int],
-    coordinates: dict[str, tuple[str, str]],
+    positions: dict[str, tuple[str, str]],
     excluded_spots: frozenset[str] = frozenset(),
 ) -> list[dict[str, str]]:
     context_stats: dict[str, dict[str, Optional[tuple[float, int]]]] = {}
-    observed_spots = set(coordinates) | set(spot_counts)
+    observed_spots = set(positions) | set(spot_counts)
     for context, cov_path in context_cov_paths.items():
         cov_stats = parse_barcoded_cov_stats(cov_path)
         context_stats[context] = cov_stats
@@ -326,8 +353,8 @@ def summarize_spots(
 
     rows: list[dict[str, str]] = []
     for spot in sorted(observed_spots):
-        x_index, y_index = coordinates.get(spot, ("NA", "NA"))
-        row = {"X_index": x_index, "Y_index": y_index, "spot": spot}
+        row_index, column_index = positions.get(spot, ("NA", "NA"))
+        row = {"row_index": row_index, "col_index": column_index, "spot": spot}
         for context in context_cov_paths:
             spec = CONTEXT_SPECS[context]
             stats = context_stats[context].get(spot)
@@ -381,6 +408,140 @@ def heatmap_ticks(maximum: int) -> list[int]:
     return ticks
 
 
+def barcode_whitelist_size(path: Path) -> int:
+    if not path.is_file():
+        raise FileNotFoundError(f"barcode whitelist not found: {path}")
+    sequences: list[str] = []
+    if path.suffix == ".gz":
+        handle_context = gzip.open(path, "rt", encoding="utf-8")
+    else:
+        handle_context = path.open("r", encoding="utf-8")
+    with handle_context as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            sequences.append(line.split()[-1].upper())
+    if not sequences:
+        raise ValueError(f"barcode whitelist is empty: {path}")
+    if len(sequences) != len(set(sequences)):
+        raise ValueError(f"barcode whitelist contains duplicate sequences: {path}")
+    return len(sequences)
+
+
+def registration_frame_site_field(rows: list[dict[str, str]]) -> str:
+    for field in ("cpg_site_count", "ca_site_count"):
+        if any(row.get(field, "NA") not in {"", "NA"} for row in rows):
+            return field
+    raise ValueError("registration frame requires CG or CA site counts")
+
+
+def write_registration_frame(
+    rows: list[dict[str, str]],
+    field: str,
+    output: Path,
+    chip_size: int,
+    spot_length: int,
+    interval: int,
+    pixel_length: float,
+) -> tuple[int, int]:
+    pitch = spot_length + interval
+    frame_length_um = chip_size * spot_length + (chip_size - 1) * interval
+    frame_length_pixels = int(frame_length_um / pixel_length)
+    if frame_length_pixels < 1:
+        raise ValueError(
+            "registration-frame pixel size is larger than the physical frame"
+        )
+
+    points: list[tuple[int, int, float]] = []
+    occupied: set[tuple[int, int]] = set()
+    for summary_row in rows:
+        value_text = summary_row.get(field, "NA")
+        row_text = summary_row.get("row_index", "NA")
+        column_text = summary_row.get("col_index", "NA")
+        if value_text in {"", "NA"} or row_text == "NA" or column_text == "NA":
+            continue
+        row_index = int(row_text)
+        column_index = int(column_text)
+        value = float(value_text)
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(
+                f"invalid {field} value for spot {summary_row.get('spot', '')}: "
+                f"{value_text}"
+            )
+        if not (0 <= row_index < chip_size and 0 <= column_index < chip_size):
+            raise ValueError(
+                f"spot {summary_row.get('spot', '')} is outside the "
+                f"{chip_size}x{chip_size} whitelist-derived chip"
+            )
+        position = (row_index, column_index)
+        if position in occupied:
+            raise ValueError(
+                f"duplicate registration-frame position: {row_index}_{column_index}"
+            )
+        occupied.add(position)
+        points.append((row_index, column_index, value))
+
+    if not points:
+        raise ValueError(f"registration frame has no usable {field} values")
+
+    maximum = max(value for _, _, value in points)
+    color_map = plt.get_cmap("magma")
+    palette = [0] * (256 * 3)
+    for palette_index in range(1, 255):
+        fraction = (palette_index - 1) / 253
+        red, green, blue, _ = color_map(fraction, bytes=True)
+        offset = palette_index * 3
+        palette[offset : offset + 3] = [red, green, blue]
+    border_rgb = matplotlib.colors.to_rgb(FRAME_BORDER_COLOR)
+    palette[255 * 3 : 256 * 3] = [round(channel * 255) for channel in border_rgb]
+
+    frame = Image.new(
+        "P", (frame_length_pixels, frame_length_pixels), color=0
+    )
+    frame.putpalette(palette)
+    frame.info["transparency"] = 0
+    draw = ImageDraw.Draw(frame)
+    for row_index, column_index, value in points:
+        display_column = chip_size - 1 - column_index
+        x_start = int(display_column * pitch / pixel_length)
+        y_start = int(row_index * pitch / pixel_length)
+        x_end = int((display_column * pitch + spot_length) / pixel_length)
+        y_end = int((row_index * pitch + spot_length) / pixel_length)
+        normalized = value / maximum if maximum else 0.0
+        color_index = 1 + round(normalized * 253)
+        draw.rectangle(
+            [x_start, y_start, x_end - 1, y_end - 1],
+            fill=color_index,
+        )
+
+    draw.rectangle(
+        [0, 0, frame_length_pixels - 1, frame_length_pixels - 1],
+        outline=255,
+        width=min(10, frame_length_pixels),
+    )
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_name(f".{output.name}.tmp.{os.getpid()}")
+    try:
+        frame.save(temporary, format="PNG")
+        os.replace(temporary, output)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return frame.size
+
+
+def write_registration_mask(output: Path, size: tuple[int, int]) -> None:
+    mask = Image.new("L", size, color=0)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_name(f".{output.name}.tmp.{os.getpid()}")
+    try:
+        mask.save(temporary, format="PNG")
+        os.replace(temporary, output)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def write_heatmap(
     rows: list[dict[str, str]],
     field: str,
@@ -392,36 +553,45 @@ def write_heatmap(
 ) -> None:
     points: list[tuple[int, int, float]] = []
     for row in rows:
-        if row[field] == "NA" or row["X_index"] == "NA" or row["Y_index"] == "NA":
+        if (
+            row[field] == "NA"
+            or row["row_index"] == "NA"
+            or row["col_index"] == "NA"
+        ):
             continue
-        points.append((int(row["X_index"]), int(row["Y_index"]), float(row[field])))
+        points.append(
+            (int(row["row_index"]), int(row["col_index"]), float(row[field]))
+        )
     figure, axis = plt.subplots(figsize=(6, 5))
     if not points:
         axis.axis("off")
         axis.text(0.5, 0.5, "No valid data", ha="center", va="center")
         axis.set_title(title)
     else:
-        max_x = max(point[0] for point in points)
-        max_y = max(point[1] for point in points)
-        matrix = [[math.nan for _ in range(max_x + 1)] for _ in range(max_y + 1)]
-        for x_index, y_index, value in points:
-            matrix[y_index][x_index] = value
+        max_row = max(point[0] for point in points)
+        max_column = max(point[1] for point in points)
+        matrix = [
+            [math.nan for _ in range(max_column + 1)]
+            for _ in range(max_row + 1)
+        ]
+        for row_index, column_index, value in points:
+            matrix[row_index][column_index] = value
         cmap = plt.get_cmap(cmap_name).copy()
         cmap.set_bad("#f2f2f2")
         image = axis.imshow(
             matrix,
-            origin="lower",
+            origin="upper",
             interpolation="nearest",
             aspect="equal",
             cmap=cmap,
             vmin=0.0,
             vmax=vmax,
-            extent=(-0.5, max_x + 0.5, -0.5, max_y + 0.5),
         )
-        axis.set_xticks(heatmap_ticks(max_x))
-        axis.set_yticks(heatmap_ticks(max_y))
-        axis.set_xlabel("X index", fontsize=8)
-        axis.set_ylabel("Y index", fontsize=8)
+        axis.invert_xaxis()
+        axis.set_xticks(heatmap_ticks(max_column))
+        axis.set_yticks(heatmap_ticks(max_row))
+        axis.set_xlabel("Column index", fontsize=8)
+        axis.set_ylabel("Row index", fontsize=8)
         axis.set_title(title, fontsize=12)
         colorbar = figure.colorbar(image, ax=axis, shrink=0.9)
         colorbar.set_label(colorbar_label)
@@ -496,6 +666,20 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.min_mapping_quality < 0:
         print("[summary] error: --min-mapping-quality must be >= 0", file=sys.stderr)
         return 1
+    if args.frame_spot_length <= 0:
+        print("[summary] error: --frame-spot-length must be > 0", file=sys.stderr)
+        return 1
+    if args.frame_interval < 0:
+        print("[summary] error: --frame-interval must be >= 0", file=sys.stderr)
+        return 1
+    if not math.isfinite(args.frame_pixel_length) or args.frame_pixel_length <= 0:
+        print("[summary] error: --frame-pixel-length must be > 0", file=sys.stderr)
+        return 1
+    try:
+        chip_size = barcode_whitelist_size(args.barcode_whitelist)
+    except (OSError, ValueError) as error:
+        print(f"[summary] error: {error}", file=sys.stderr)
+        return 1
     work_dir = Path(args.work_dir)
     output_dir = Path(args.output_dir) if args.output_dir else work_dir / "summary"
     coverage_dir = work_dir / "coverage"
@@ -539,6 +723,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(f"[summary] work-dir={work_dir}")
     print(f"[summary] assay={args.assay}")
     print(f"[summary] context-mode={args.context_mode}")
+    print(f"[summary] barcode-whitelist={args.barcode_whitelist}")
+    print(f"[summary] chip-size={chip_size}x{chip_size}")
+    print(f"[summary] frame-spot-length={args.frame_spot_length}")
+    print(f"[summary] frame-interval={args.frame_interval}")
+    print(f"[summary] frame-pixel-length={args.frame_pixel_length}")
     excluded_spots = SMC_EXCLUDED_SPOTS if args.assay == "smc" else frozenset()
     print(
         "[summary] excluded-spots="
@@ -558,7 +747,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     try:
-        coordinates, cb_to_spot = load_spot_manifest(
+        positions, cb_to_spot = load_spot_manifest(
             manifest_path,
             c_to_t=args.assay in {"emseq", "cabernet"},
         )
@@ -571,14 +760,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         per_spot_rows = summarize_spots(
             host_cov_paths,
             spot_counts,
-            coordinates,
+            positions,
             excluded_spots,
         )
         if not per_spot_rows:
             raise ValueError("no per-spot coverage or CB-tagged reads were found")
         output_dir.mkdir(parents=True, exist_ok=True)
         per_spot_path = output_dir / "per_spot_summary.tsv"
-        per_spot_fields = ["X_index", "Y_index", "spot"]
+        per_spot_fields = ["row_index", "col_index", "spot"]
         for context in contexts:
             spec = CONTEXT_SPECS[context]
             per_spot_fields.extend([str(spec["mean_field"]), str(spec["site_field"])])
@@ -588,6 +777,23 @@ def main(argv: Optional[list[str]] = None) -> int:
             per_spot_fields,
             per_spot_rows,
         )
+        frame_field = registration_frame_site_field(per_spot_rows)
+        frame_width, frame_height = write_registration_frame(
+            per_spot_rows,
+            frame_field,
+            output_dir / "frame_site_count.png",
+            chip_size,
+            args.frame_spot_length,
+            args.frame_interval,
+            args.frame_pixel_length,
+        )
+        write_registration_mask(
+            output_dir / "mask.png",
+            (frame_width, frame_height),
+        )
+        print(f"[summary] frame-site-field={frame_field}")
+        print(f"[summary] frame-size={frame_width}x{frame_height}")
+        print(f"[summary] mask-size={frame_width}x{frame_height}")
 
         sample_row: dict[str, str] = {
             "saturation_rate": read_saturation_rate(saturation_summary) or "NA"

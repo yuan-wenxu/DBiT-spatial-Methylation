@@ -34,7 +34,7 @@ M-bias; `spike-call` and `call` can then run concurrently from its outputs.
 | `call` | `script/steps/06.call.sh` | Call per-spot host methylation |
 | `saturation` | `script/steps/07.saturation.sh` | Estimate CpG saturation |
 | `summary` | `script/steps/08.summary.sh` | Generate QC tables and plots |
-| `methscan` | `script/steps/09.methscan.sh` | Generate context-specific VMR matrices |
+| `methscan` | `script/steps/09.methscan.sh` | Generate context-specific dense and 10x sparse VMR matrices |
 
 The source code is authoritative if it differs from this document.
 
@@ -90,6 +90,7 @@ Frequently adjusted processing settings include:
 - `CALL_CONTEXT_MODE` (`cg`, `ch`, or `both`);
 - mapping/base-quality thresholds and caller parallelism;
 - M-bias sampling and stability thresholds;
+- summary registration-frame spot and interval lengths;
 - Slurm CPU, memory, time, and partition values.
 
 See `config/dbitm.config.example.sh` for all settings.
@@ -108,11 +109,15 @@ The barcode stage locates this structure, corrects both barcodes against the
 whitelist, removes the non-biological prefix, and annotates the read name with:
 
 ```text
-barcode1+barcode2
+barcode2+barcode1
 ```
 
 Host alignment moves this value into the BAM `CB` tag. Structure or barcode
 failures are written to spike-in candidate FASTQs.
+
+The call stage restores the logical spatial order when it reads the CB tag:
+barcode1 is the row index, barcode2 is the column index, and spot IDs use
+`<row>_<column>`.
 
 SmC uses different anchors and additionally splits informative reads into
 Watson and Crick groups. See `docs/smc-technical.md` for the exact layout.
@@ -278,20 +283,22 @@ cutoffs are therefore applied only to the matching conversion class.
 
 ### 4.6 Methylation calling
 
-`06.call.sh` creates per-spot host calls from the pooled BAM (or the persistent
-filtered BAM for SmC), reference FASTA, barcode whitelist, and host M-bias
-cutoff. All whitelist spots are recorded in `coverage/spot_manifest.tsv`,
-including empty spots.
+`06.call.sh` creates combined spatial host coverage files from the pooled BAM
+(or the persistent filtered BAM for SmC), reference FASTA, barcode whitelist,
+and host M-bias cutoff. All whitelist spots are recorded in
+`coverage/spot_manifest.tsv`, including empty spots.
 
 ```text
-coverage/host/<X>/<X>_<Y>.CG.cov
-coverage/host/<X>/<X>_<Y>.CA.cov
-coverage/host/<X>/<X>_<Y>.CC.cov
-coverage/host/<X>/<X>_<Y>.CT.cov
+coverage/host/host.CG.cov
+coverage/host/host.CA.cov
+coverage/host/host.CC.cov
+coverage/host/host.CT.cov
 ```
 
-CG output contains genomic position, methylation percentage, methylated count,
-and unmethylated count. CH output additionally records context and strand.
+Each row contains the genomic position, methylation percentage, methylated
+count, unmethylated count, and a seventh-column `<row>_<column>` spot ID. CH
+output additionally records strand in the eighth column. The files are not
+split into separate row, column, or spot directories.
 
 For SmC, Watson and Crick are called independently with
 `host.watson.mbias.cutoffs.tsv` and `host.crick.mbias.cutoffs.tsv`. The separate
@@ -351,6 +358,21 @@ the corresponding estimate in `predicted_median_unique_cpgs`.
 statistics. It writes per-spot and sample-level tables plus context-specific
 heatmaps and violin plots.
 
+`per_spot_summary.tsv` begins with `row_index`, `col_index`, and `spot`.
+Spatial heatmaps place barcode2 columns on the horizontal axis and barcode1
+rows on the vertical axis. Spot `00_00` is at the upper-right corner; row
+indices increase downward and column indices increase leftward.
+
+The summary also writes `frame_site_count.png` for image registration. Its
+square row/column count is inferred from the assay-specific barcode whitelist.
+Each spot is colored by CpG site count, falling back to CA site count when CpG
+data are unavailable. `SUMMARY_FRAME_SPOT_LENGTH` and
+`SUMMARY_FRAME_INTERVAL` control the spot side length and gap in micrometers;
+both default to 50. `SUMMARY_FRAME_PIXEL_LENGTH` sets image resolution and
+defaults to 0.294 micrometers per pixel. The frame uses the same orientation as
+the heatmaps. A same-size, single-channel, pure-black `mask.png` is written for
+registration workflows that require a companion mask.
+
 Per-spot methylation gives every called site equal weight:
 
 ```text
@@ -367,6 +389,8 @@ Primary outputs are:
 dbitm/summary/
 ├── per_spot_summary.tsv
 ├── sample_summary.tsv
+├── frame_site_count.png
+├── mask.png
 ├── reads_heatmap.png
 ├── <context>_site_count_heatmap.png
 ├── mean_<context>_methylation_heatmap.png
@@ -382,12 +406,40 @@ Only plots for contexts selected by `CALL_CONTEXT_MODE` are generated.
 context:
 
 ```text
-prepare -> filter -> smooth -> scan -> matrix
+prepare -> filter -> smooth -> scan -> matrix -> 10x sparse export
 ```
 
 Outputs are stored under `dbitm/methscan/CG`, `CA`, `CC`, and `CT`. Each selected
 directory contains VMRs and spot-by-VMR matrices. Missing matrix values mean no
 usable observation, not zero methylation.
+
+After `methscan matrix` finishes, the same stage converts
+`methylation_fractions.csv.gz` and `mean_shrunken_residuals.csv.gz`. For each
+input, it writes a feature-by-barcode Matrix Market matrix and matching 10x
+metadata:
+
+```text
+dbitm/methscan/<context>/matrix/10x/
+├── methylation_fractions/
+│   ├── matrix.mtx.gz
+│   ├── barcodes.tsv.gz
+│   └── features.tsv.gz
+└── mean_shrunken_residuals/
+    ├── matrix.mtx.gz
+    ├── barcodes.tsv.gz
+    └── features.tsv.gz
+```
+
+The conversion streams CSV rows and does not load the dense matrix into memory.
+Matrix Market omits both missing values and numeric zeros; use the original
+`total_sites.csv.gz` as an observation mask when that distinction matters.
+
+The Python converter can also be run directly on an existing MethSCAn matrix:
+
+```bash
+pixi run -e default python script/steps/python/09.dense_to_10x.py \
+    /path/to/methylation_fractions.csv.gz /path/to/output/10x
+```
 
 ## 5. Output and scratch behavior
 

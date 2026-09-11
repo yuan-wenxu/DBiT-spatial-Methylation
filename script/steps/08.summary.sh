@@ -55,6 +55,36 @@ case "$context_mode" in
     *) echo "[dbitm] summary: CALL_CONTEXT_MODE must be cg, ch, or both" >&2; exit 1 ;;
 esac
 
+if [[ "$assay" == smc ]]; then
+    barcode_whitelist=${SMC_BARCODE_WHITELIST:-$REPO_DIR/docs/barcodes/barcodes-smc.tsv}
+else
+    barcode_whitelist=${BARCODE_WHITELIST:-$REPO_DIR/docs/barcodes/barcodes50.tsv}
+fi
+if [[ "$barcode_whitelist" != /* ]]; then
+    barcode_whitelist=$REPO_DIR/$barcode_whitelist
+fi
+if [[ ! -f "$barcode_whitelist" ]]; then
+    echo "[dbitm] summary: barcode whitelist not found: $barcode_whitelist" >&2
+    exit 1
+fi
+barcode_whitelist=$(realpath "$barcode_whitelist")
+
+frame_spot_length=${SUMMARY_FRAME_SPOT_LENGTH:-50}
+frame_interval=${SUMMARY_FRAME_INTERVAL:-50}
+frame_pixel_length=${SUMMARY_FRAME_PIXEL_LENGTH:-0.294}
+if [[ ! "$frame_spot_length" =~ ^[1-9][0-9]*$ ]]; then
+    echo "[dbitm] summary: SUMMARY_FRAME_SPOT_LENGTH must be > 0" >&2
+    exit 1
+fi
+if [[ ! "$frame_interval" =~ ^[0-9]+$ ]]; then
+    echo "[dbitm] summary: SUMMARY_FRAME_INTERVAL must be >= 0" >&2
+    exit 1
+fi
+if [[ -z "$frame_pixel_length" ]]; then
+    echo "[dbitm] summary: SUMMARY_FRAME_PIXEL_LENGTH must be > 0" >&2
+    exit 1
+fi
+
 declare -a spike_names=()
 spike_declaration=$(declare -p CALL_SPIKE_IN_REFERENCES 2>/dev/null || true)
 if [[ -n "$spike_declaration" ]]; then
@@ -80,6 +110,10 @@ declare -a summary_args=(
     --work-dir "$final_dir"
     --min-mapping-quality "$minimum_mapq"
     --context-mode "$context_mode"
+    --barcode-whitelist "$barcode_whitelist"
+    --frame-spot-length "$frame_spot_length"
+    --frame-interval "$frame_interval"
+    --frame-pixel-length "$frame_pixel_length"
 )
 for spike_name in "${spike_names[@]}"; do
     summary_args+=(--spike-in-name "$spike_name")
@@ -90,6 +124,10 @@ echo "[dbitm] assay: $assay"
 echo "[dbitm] work directory: $final_dir"
 echo "[dbitm] output directory: $output_dir"
 echo "[dbitm] context mode: $context_mode"
+echo "[dbitm] barcode whitelist: $barcode_whitelist"
+echo "[dbitm] frame spot length: $frame_spot_length"
+echo "[dbitm] frame interval: $frame_interval"
+echo "[dbitm] frame pixel length: $frame_pixel_length"
 echo "[dbitm] spike-ins: ${spike_names[*]:-none}"
 echo "[dbitm] config: $config_file"
 
