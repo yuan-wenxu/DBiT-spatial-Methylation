@@ -44,6 +44,7 @@ image_path=$(realpath "$image_path")
 image_dir=$(dirname "$image_path")
 mask_path=$image_dir/meth-mask.png
 output_dir=$image_dir/meth-image
+methscan_dir=$(realpath -m "$(dirname "$image_dir")/meth/dbitm/methscan")
 if [[ ! -f "$mask_path" ]]; then
     echo "[dbitm] image: adjacent registered mask not found: $mask_path" >&2
     exit 1
@@ -98,11 +99,31 @@ declare -a segment_args=(
     --pixel_length "$pixel_length"
 )
 
+declare -a matrix_dirs=()
+if [[ -d "$methscan_dir" ]]; then
+    while IFS= read -r -d '' matrix_dir; do
+        if [[ -f "$matrix_dir/matrix.mtx.gz" && \
+              -f "$matrix_dir/barcodes.tsv.gz" && \
+              -f "$matrix_dir/features.tsv.gz" ]]; then
+            matrix_dirs+=("$matrix_dir")
+        else
+            echo "[dbitm] image: skipping incomplete 10x directory: $matrix_dir" >&2
+        fi
+    done < <(
+        find "$methscan_dir" -type d \
+            \( -path '*/matrix/10x/methylation_fractions' -o \
+               -path '*/matrix/10x/mean_shrunken_residuals' \) \
+            -print0 | sort -z
+    )
+fi
+
 echo "====== dbitm image segmentation tool ======"
 echo "[dbitm] assay: $assay"
 echo "[dbitm] source image: $image_path"
 echo "[dbitm] frame mask: $mask_path"
 echo "[dbitm] output directory: $output_dir"
+echo "[dbitm] MethSCAn directory: $methscan_dir"
+echo "[dbitm] 10x copy targets: ${#matrix_dirs[@]}"
 echo "[dbitm] barcode whitelist: $barcode_whitelist"
 echo "[dbitm] chip size: ${spot_count}x${spot_count}"
 echo "[dbitm] spot length: $spot_length"
@@ -114,6 +135,10 @@ if [[ "$dry_run" == true ]]; then
     printf ' %q' pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default \
         python "$segment_script" "${segment_args[@]}"
     printf '\n'
+    for matrix_dir in "${matrix_dirs[@]}"; do
+        echo "[dbitm] planned copy: $output_dir/meth-tissue_positions.tsv.gz -> $matrix_dir/tissue_positions.tsv.gz"
+        echo "[dbitm] planned copy: $output_dir/meth-fullres_grayscale.png -> $matrix_dir/tissue_raw_image.png"
+    done
     echo "[dbitm] dry-run: no files will be written"
     echo "====== dbitm image segmentation dry-run finished ======"
     exit 0
@@ -123,5 +148,19 @@ mkdir -p "$output_dir"
 pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default \
     python "$segment_script" "${segment_args[@]}" \
     2>&1 | tee "$output_dir/meth-seg.log"
+positions_path=$output_dir/meth-tissue_positions.tsv.gz
+grayscale_path=$output_dir/meth-fullres_grayscale.png
+if [[ ! -f "$positions_path" || ! -f "$grayscale_path" ]]; then
+    echo "[dbitm] image: required segmentation outputs are missing" >&2
+    exit 1
+fi
+for matrix_dir in "${matrix_dirs[@]}"; do
+    cp -f -- "$positions_path" "$matrix_dir/tissue_positions.tsv.gz"
+    cp -f -- "$grayscale_path" "$matrix_dir/tissue_raw_image.png"
+    echo "[dbitm] copied image outputs: $matrix_dir"
+done
+if (( ${#matrix_dirs[@]} == 0 )); then
+    echo "[dbitm] image: warning: no complete MethSCAn 10x directories found; no outputs copied" >&2
+fi
 echo "[dbitm] tissue positions: $output_dir/meth-tissue_positions.tsv.gz"
 echo "====== dbitm image segmentation finished ======"

@@ -477,6 +477,15 @@ Barcode sequences use barcode2+barcode1 order, with barcode1 mapped to rows and
 barcode2 mapped to columns. This tool is not part of `all` because its input is
 an image instead of the raw FASTQ directory.
 
+After segmentation, the tool discovers complete `methylation_fractions` and
+`mean_shrunken_residuals` 10x directories below the sample MethSCAn root. It
+copies `meth-tissue_positions.tsv.gz` as `tissue_positions.tsv.gz` and
+`meth-fullres_grayscale.png` as `tissue_raw_image.png` beside each
+`matrix.mtx.gz`. The MethSCAn root is fixed at
+`<sample>/meth/dbitm/methscan` for an image under `<sample>/image`. When no
+complete 10x directory exists, segmentation still succeeds and reports that
+no copy was performed.
+
 ## 5. Output and scratch behavior
 
 A complete run uses this top-level layout:
