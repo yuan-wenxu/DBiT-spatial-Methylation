@@ -44,6 +44,9 @@ fi
 final_dir=$(dirname "$raw_abs")/dbitm
 run_input=$raw_abs
 run_output=$final_dir/fastp
+merge_dir=$final_dir/merge
+merged_r1=$merge_dir/R1.merged.fastq.gz
+merged_r2=$merge_dir/R2.merged.fastq.gz
 
 declare -a r1_files=()
 declare -a r2_files=()
@@ -120,7 +123,11 @@ if [[ "$dry_run" == true ]]; then
         echo "[dbitm] input pair $((i + 1)) R2: ${r2_files[$i]}"
     done
     if (( ${#r1_files[@]} > 1 )); then
-        echo "[dbitm] planned merge: ${#r1_files[@]} pairs -> one R1/R2 pair"
+        if [[ -f "$merged_r1" && -f "$merged_r2" ]]; then
+            echo "[dbitm] planned merge: reuse existing R1/R2 merged FASTQs"
+        else
+            echo "[dbitm] planned merge: ${#r1_files[@]} pairs -> one R1/R2 pair"
+        fi
     fi
     echo "[dbitm] planned command: fastp -> $final_dir/fastp"
     echo "====== dbitm fastp dry-run finished ======"
@@ -130,6 +137,9 @@ fi
 mkdir -p "$final_dir"
 rm -rf -- "$run_output"
 mkdir -p "$run_output"
+if (( ${#r1_files[@]} > 1 )); then
+    mkdir -p "$merge_dir"
+fi
 
 merge_fastqs() {
     local output=$1
@@ -144,30 +154,43 @@ merge_fastqs() {
         fi
     done
     if [[ "$all_gzip" == true ]]; then
-        cat -- "$@" > "$output"
-        return
+        if ! cat -- "$@" > "$output"; then
+            rm -f -- "$output"
+            return 1
+        fi
+    else
+        if ! {
+                for input in "$@"; do
+                    if [[ "${input,,}" == *.gz ]]; then
+                        pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default pigz -cd -- "$input"
+                    else
+                        cat -- "$input"
+                    fi
+                done
+            } | pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default pigz -p "$FASTP_THREADS" > "$output"
+        then
+            rm -f -- "$output"
+            return 1
+        fi
     fi
-    {
-        for input in "$@"; do
-            if [[ "${input,,}" == *.gz ]]; then
-                pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default pigz -cd -- "$input"
-            else
-                cat -- "$input"
-            fi
-        done
-    } | pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default pigz -p "$FASTP_THREADS" > "$output"
 }
 
 r1=${r1_files[0]}
 r2=${r2_files[0]}
 echo "[dbitm] input pairs: ${#r1_files[@]}"
 if (( ${#r1_files[@]} > 1 )); then
-    merged_r1=$run_output/R1.merged.fastq.gz
-    merged_r2=$run_output/R2.merged.fastq.gz
-    echo "[dbitm] merging ${#r1_files[@]} R1 files: $merged_r1"
-    merge_fastqs "$merged_r1" "${r1_files[@]}"
-    echo "[dbitm] merging ${#r2_files[@]} R2 files: $merged_r2"
-    merge_fastqs "$merged_r2" "${r2_files[@]}"
+    if [[ -f "$merged_r1" && -f "$merged_r2" ]]; then
+        echo "[dbitm] reusing merged R1: $merged_r1"
+        echo "[dbitm] reusing merged R2: $merged_r2"
+    else
+        if [[ -f "$merged_r1" || -f "$merged_r2" ]]; then
+            echo "[dbitm] incomplete merged FASTQ pair found; regenerating both files"
+        fi
+        echo "[dbitm] merging ${#r1_files[@]} R1 files: $merged_r1"
+        merge_fastqs "$merged_r1" "${r1_files[@]}"
+        echo "[dbitm] merging ${#r2_files[@]} R2 files: $merged_r2"
+        merge_fastqs "$merged_r2" "${r2_files[@]}"
+    fi
     r1=$merged_r1
     r2=$merged_r2
 fi
