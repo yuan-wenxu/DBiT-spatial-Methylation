@@ -45,6 +45,66 @@ final_dir=$(dirname "$raw_abs")/dbitm
 run_input=$raw_abs
 run_output=$final_dir/fastp
 
+declare -a r1_files=()
+declare -a r2_files=()
+
+collect_fastq_pairs() {
+    local input_dir=$1
+    local path filename pair_key mate i
+    declare -a fastq_candidates=()
+    declare -a r1_keys=()
+    declare -a r2_keys=()
+
+    shopt -s nullglob nocaseglob
+    fastq_candidates=(
+        "$input_dir"/*.fastq.gz
+        "$input_dir"/*.fq.gz
+        "$input_dir"/*.fastq
+        "$input_dir"/*.fq
+    )
+    shopt -u nullglob nocaseglob
+
+    if (( ${#fastq_candidates[@]} == 0 )); then
+        echo "[dbitm] fastp: no FASTQ files found: $input_dir" >&2
+        exit 1
+    fi
+
+    for path in "${fastq_candidates[@]}"; do
+        [[ -f "$path" ]] || continue
+        filename=$(basename "$path")
+        if [[ ! "$filename" =~ ^((.*[^[:alnum:]])?)[Rr]([12])([^[:alnum:]].*|$)$ ]]; then
+            echo "[dbitm] fastp: FASTQ filename must contain an independent R1 or R2 token: $filename" >&2
+            exit 1
+        fi
+        pair_key=${BASH_REMATCH[1]}R#${BASH_REMATCH[4]}
+        mate=${BASH_REMATCH[3]}
+        if [[ "$mate" == 1 ]]; then
+            r1_files+=("$path")
+            r1_keys+=("$pair_key")
+        else
+            r2_files+=("$path")
+            r2_keys+=("$pair_key")
+        fi
+    done
+
+    if (( ${#r1_files[@]} == 0 || ${#r2_files[@]} == 0 )); then
+        echo "[dbitm] fastp: input directory must contain at least one R1/R2 FASTQ pair" >&2
+        exit 1
+    fi
+    if (( ${#r1_files[@]} != ${#r2_files[@]} )); then
+        echo "[dbitm] fastp: found ${#r1_files[@]} R1 files but ${#r2_files[@]} R2 files" >&2
+        exit 1
+    fi
+    for (( i = 0; i < ${#r1_files[@]}; i++ )); do
+        if [[ "${r1_keys[$i]}" != "${r2_keys[$i]}" ]]; then
+            echo "[dbitm] fastp: FASTQ pair mismatch: $(basename "${r1_files[$i]}") and $(basename "${r2_files[$i]}")" >&2
+            exit 1
+        fi
+    done
+}
+
+collect_fastq_pairs "$run_input"
+
 echo "====== dbitm fastp ======"
 echo "[dbitm] assay: $assay"
 echo "[dbitm] input directory: $raw_abs"
@@ -53,42 +113,15 @@ echo "[dbitm] threads: $FASTP_THREADS"
 echo "[dbitm] output directory: $final_dir/fastp"
 
 if [[ "$dry_run" == true ]]; then
-    declare -a dry_fastq_candidates=()
-    declare -a dry_fastq_files=()
-    shopt -s nullglob nocaseglob
-    dry_fastq_candidates=(
-        "$raw_abs"/*.fastq.gz
-        "$raw_abs"/*.fq.gz
-        "$raw_abs"/*.fastq
-        "$raw_abs"/*.fq
-    )
-    shopt -u nullglob nocaseglob
-    for path in "${dry_fastq_candidates[@]}"; do
-        [[ -f "$path" ]] && dry_fastq_files+=("$path")
-    done
-    if (( ${#dry_fastq_files[@]} != 2 )); then
-        echo "[dbitm] fastp: input directory must contain exactly two FASTQ files, found ${#dry_fastq_files[@]}: $raw_abs" >&2
-        exit 1
-    fi
-    dry_r1=
-    dry_r2=
-    for path in "${dry_fastq_files[@]}"; do
-        filename=$(basename "$path")
-        if [[ "$filename" =~ (^|[^[:alnum:]])[Rr]1([^[:alnum:]]|$) ]]; then
-            [[ -z "$dry_r1" ]] || { echo "[dbitm] fastp: input directory contains two R1 FASTQ files" >&2; exit 1; }
-            dry_r1=$path
-        elif [[ "$filename" =~ (^|[^[:alnum:]])[Rr]2([^[:alnum:]]|$) ]]; then
-            [[ -z "$dry_r2" ]] || { echo "[dbitm] fastp: input directory contains two R2 FASTQ files" >&2; exit 1; }
-            dry_r2=$path
-        else
-            echo "[dbitm] fastp: FASTQ filename must contain an independent R1 or R2 token: $filename" >&2
-            exit 1
-        fi
-    done
-    [[ -n "$dry_r1" && -n "$dry_r2" ]] || { echo "[dbitm] fastp: input directory must contain one R1 and one R2 FASTQ file" >&2; exit 1; }
     echo "[dbitm] dry-run: no files will be written"
-    echo "[dbitm] input R1: $dry_r1"
-    echo "[dbitm] input R2: $dry_r2"
+    echo "[dbitm] input pairs: ${#r1_files[@]}"
+    for (( i = 0; i < ${#r1_files[@]}; i++ )); do
+        echo "[dbitm] input pair $((i + 1)) R1: ${r1_files[$i]}"
+        echo "[dbitm] input pair $((i + 1)) R2: ${r2_files[$i]}"
+    done
+    if (( ${#r1_files[@]} > 1 )); then
+        echo "[dbitm] planned merge: ${#r1_files[@]} pairs -> one R1/R2 pair"
+    fi
     echo "[dbitm] planned command: fastp -> $final_dir/fastp"
     echo "====== dbitm fastp dry-run finished ======"
     exit 0
@@ -98,41 +131,46 @@ mkdir -p "$final_dir"
 rm -rf -- "$run_output"
 mkdir -p "$run_output"
 
-declare -a fastq_candidates=()
-declare -a fastq_files=()
-shopt -s nullglob nocaseglob
-fastq_candidates=(
-    "$run_input"/*.fastq.gz
-    "$run_input"/*.fq.gz
-    "$run_input"/*.fastq
-    "$run_input"/*.fq
-)
-shopt -u nullglob nocaseglob
-for path in "${fastq_candidates[@]}"; do
-    [[ -f "$path" ]] && fastq_files+=("$path")
-done
+merge_fastqs() {
+    local output=$1
+    shift
+    local input
+    local all_gzip=true
 
-if (( ${#fastq_files[@]} != 2 )); then
-    echo "[dbitm] fastp: input directory must contain exactly two FASTQ files, found ${#fastq_files[@]}: $run_input" >&2
-    exit 1
-fi
-
-r1=""
-r2=""
-for path in "${fastq_files[@]}"; do
-    filename=$(basename "$path")
-    if [[ "$filename" =~ (^|[^[:alnum:]])[Rr]1([^[:alnum:]]|$) ]]; then
-        [[ -z "$r1" ]] || { echo "[dbitm] fastp: input directory contains two R1 FASTQ files" >&2; exit 1; }
-        r1=$path
-    elif [[ "$filename" =~ (^|[^[:alnum:]])[Rr]2([^[:alnum:]]|$) ]]; then
-        [[ -z "$r2" ]] || { echo "[dbitm] fastp: input directory contains two R2 FASTQ files" >&2; exit 1; }
-        r2=$path
-    else
-        echo "[dbitm] fastp: FASTQ filename must contain an independent R1 or R2 token: $filename" >&2
-        exit 1
+    for input in "$@"; do
+        if [[ "${input,,}" != *.gz ]]; then
+            all_gzip=false
+            break
+        fi
+    done
+    if [[ "$all_gzip" == true ]]; then
+        cat -- "$@" > "$output"
+        return
     fi
-done
-[[ -n "$r1" && -n "$r2" ]] || { echo "[dbitm] fastp: input directory must contain one R1 and one R2 FASTQ file" >&2; exit 1; }
+    {
+        for input in "$@"; do
+            if [[ "${input,,}" == *.gz ]]; then
+                pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default pigz -cd -- "$input"
+            else
+                cat -- "$input"
+            fi
+        done
+    } | pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default pigz -p "$FASTP_THREADS" > "$output"
+}
+
+r1=${r1_files[0]}
+r2=${r2_files[0]}
+echo "[dbitm] input pairs: ${#r1_files[@]}"
+if (( ${#r1_files[@]} > 1 )); then
+    merged_r1=$run_output/R1.merged.fastq.gz
+    merged_r2=$run_output/R2.merged.fastq.gz
+    echo "[dbitm] merging ${#r1_files[@]} R1 files: $merged_r1"
+    merge_fastqs "$merged_r1" "${r1_files[@]}"
+    echo "[dbitm] merging ${#r2_files[@]} R2 files: $merged_r2"
+    merge_fastqs "$merged_r2" "${r2_files[@]}"
+    r1=$merged_r1
+    r2=$merged_r2
+fi
 
 echo "[dbitm] input R1: $r1"
 echo "[dbitm] input R2: $r2"
