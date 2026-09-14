@@ -299,6 +299,225 @@ submit_step() {
     echo "[dbitm] submitted $step_name job-id=$job_id"
 }
 
+validate_align_hpc_resources() {
+    local resource_var
+    for resource_var in \
+        ALIGN_NAME ALIGN_THREADS ALIGN_MEM ALIGN_TIME \
+        ALIGN_PREPARE_NAME ALIGN_PREPARE_THREADS ALIGN_PREPARE_MEM ALIGN_PREPARE_TIME; do
+        if [[ -z ${!resource_var:-} ]]; then
+            echo "[dbitm] error: $resource_var is required for 'align' in hpc mode" >&2
+            return 1
+        fi
+    done
+}
+
+submit_align_job() {
+    local step_script=$1
+    local job_name=$2
+    local threads=$3
+    local partition=$4
+    local mem=$5
+    local time=$6
+    local dependency=$7
+    shift 7
+    local -a align_args=("$@")
+    local wrapped_command submission job_id align_arg
+    local log_dir output_path error_path
+    local -a sbatch_args
+
+    log_dir=$(dirname "$input")/dbitm/logs
+    output_path=${SBATCH_OUTPUT:-%x_%j.out}
+    error_path=${SBATCH_ERROR:-%x_%j.err}
+    [[ "$output_path" == /* ]] || output_path=$log_dir/$output_path
+    [[ "$error_path" == /* ]] || error_path=$log_dir/$error_path
+
+    sbatch_args=(
+        --parsable
+        --job-name="$job_name"
+        --cpus-per-task="$threads"
+        --mem="$mem"
+        --time="$time"
+        --output="$output_path"
+        --error="$error_path"
+    )
+    [[ -n "$partition" ]] && sbatch_args+=(--partition="$partition")
+    [[ "${SBATCH_REQUEUE:-}" == true ]] && sbatch_args+=(--requeue)
+    [[ -n "$dependency" ]] && sbatch_args+=(--dependency="afterok:$dependency")
+
+    printf -v wrapped_command \
+        'export DBITM_PROJECT_ROOT=%q DBITM_CONFIG=%q; %q %q %q' \
+        "$REPO_DIR" "$config" "$step_script" "$assay" "$input"
+    for align_arg in "${align_args[@]}"; do
+        printf -v wrapped_command '%s %q' "$wrapped_command" "$align_arg"
+    done
+
+    if [[ "$dry_run" == true ]]; then
+        printf '[dbitm] dry-run sbatch:'
+        printf ' %q' sbatch "${sbatch_args[@]}" "--wrap=$wrapped_command"
+        printf '\n'
+        SUBMITTED_JOB_ID=dryrun_${job_name//[^A-Za-z0-9_]/_}
+        return 0
+    fi
+
+    mkdir -p "$log_dir"
+    echo "[dbitm] submitting align via sbatch (job-name=$job_name cpus=$threads mem=$mem time=$time dependency=${dependency:-none})..."
+    submission=$(sbatch "${sbatch_args[@]}" --wrap="$wrapped_command")
+    job_id=${submission%%;*}
+    if [[ ! "$job_id" =~ ^[0-9]+$ ]]; then
+        echo "[dbitm] error: unable to parse sbatch job ID for 'align': $submission" >&2
+        return 1
+    fi
+    SUBMITTED_JOB_ID=$job_id
+    echo "[dbitm] submitted align job-id=$job_id"
+}
+
+submit_align_chunks() {
+    local dependency=${1:-}
+    local prepare_job_id chunk chunk_index
+    local -a chunk_job_ids=()
+
+    if [[ ! "${BARCODE_CHUNK:-}" =~ ^[1-9][0-9]*$ ]]; then
+        echo "[dbitm] error: BARCODE_CHUNK must be >= 1 for per-chunk align submission" >&2
+        return 1
+    fi
+
+    validate_align_hpc_resources
+    submit_align_job \
+        "$STEPS_DIR/03.align_prepare.sh" \
+        "$ALIGN_PREPARE_NAME" \
+        "$ALIGN_PREPARE_THREADS" \
+        "$ALIGN_PREPARE_PARTITION" \
+        "$ALIGN_PREPARE_MEM" \
+        "$ALIGN_PREPARE_TIME" \
+        "$dependency"
+    prepare_job_id=$SUBMITTED_JOB_ID
+    for ((chunk_index = 1; chunk_index <= BARCODE_CHUNK; chunk_index++)); do
+        printf -v chunk '%04d' "$chunk_index"
+        submit_align_job \
+            "$(get_step_script align)" \
+            "$ALIGN_NAME-$chunk" \
+            "$ALIGN_THREADS" \
+            "$ALIGN_PARTITION" \
+            "$ALIGN_MEM" \
+            "$ALIGN_TIME" \
+            "$prepare_job_id" \
+            --chunk "$chunk"
+        chunk_job_ids+=("$SUBMITTED_JOB_ID")
+    done
+    SUBMITTED_JOB_ID=$(IFS=:; echo "${chunk_job_ids[*]}")
+    echo "[dbitm] align chunk jobs: $SUBMITTED_JOB_ID"
+}
+
+validate_spike_align_hpc_resources() {
+    local resource_var
+    for resource_var in \
+        SPIKE_ALIGN_NAME SPIKE_ALIGN_THREADS SPIKE_ALIGN_MEM SPIKE_ALIGN_TIME \
+        SPIKE_ALIGN_PREPARE_NAME SPIKE_ALIGN_PREPARE_THREADS \
+        SPIKE_ALIGN_PREPARE_MEM SPIKE_ALIGN_PREPARE_TIME; do
+        if [[ -z ${!resource_var:-} ]]; then
+            echo "[dbitm] error: $resource_var is required for 'spike-align' in hpc mode" >&2
+            return 1
+        fi
+    done
+}
+
+submit_spike_align_job() {
+    local step_script=$1
+    local job_name=$2
+    local threads=$3
+    local partition=$4
+    local mem=$5
+    local time=$6
+    local dependency=$7
+    shift 7
+    local -a spike_align_args=("$@")
+    local wrapped_command submission job_id spike_align_arg
+    local log_dir output_path error_path
+    local -a sbatch_args
+
+    log_dir=$(dirname "$input")/dbitm/logs
+    output_path=${SBATCH_OUTPUT:-%x_%j.out}
+    error_path=${SBATCH_ERROR:-%x_%j.err}
+    [[ "$output_path" == /* ]] || output_path=$log_dir/$output_path
+    [[ "$error_path" == /* ]] || error_path=$log_dir/$error_path
+
+    sbatch_args=(
+        --parsable
+        --job-name="$job_name"
+        --cpus-per-task="$threads"
+        --mem="$mem"
+        --time="$time"
+        --output="$output_path"
+        --error="$error_path"
+    )
+    [[ -n "$partition" ]] && sbatch_args+=(--partition="$partition")
+    [[ "${SBATCH_REQUEUE:-}" == true ]] && sbatch_args+=(--requeue)
+    [[ -n "$dependency" ]] && sbatch_args+=(--dependency="afterok:$dependency")
+
+    printf -v wrapped_command \
+        'export DBITM_PROJECT_ROOT=%q DBITM_CONFIG=%q; %q %q %q' \
+        "$REPO_DIR" "$config" "$step_script" "$assay" "$input"
+    for spike_align_arg in "${spike_align_args[@]}"; do
+        printf -v wrapped_command '%s %q' "$wrapped_command" "$spike_align_arg"
+    done
+
+    if [[ "$dry_run" == true ]]; then
+        printf '[dbitm] dry-run sbatch:'
+        printf ' %q' sbatch "${sbatch_args[@]}" "--wrap=$wrapped_command"
+        printf '\n'
+        SUBMITTED_JOB_ID=dryrun_${job_name//[^A-Za-z0-9_]/_}
+        return 0
+    fi
+
+    mkdir -p "$log_dir"
+    echo "[dbitm] submitting spike-align via sbatch (job-name=$job_name cpus=$threads mem=$mem time=$time dependency=${dependency:-none})..."
+    submission=$(sbatch "${sbatch_args[@]}" --wrap="$wrapped_command")
+    job_id=${submission%%;*}
+    if [[ ! "$job_id" =~ ^[0-9]+$ ]]; then
+        echo "[dbitm] error: unable to parse sbatch job ID for 'spike-align': $submission" >&2
+        return 1
+    fi
+    SUBMITTED_JOB_ID=$job_id
+    echo "[dbitm] submitted spike-align job-id=$job_id"
+}
+
+submit_spike_align_chunks() {
+    local dependency=${1:-}
+    local prepare_job_id chunk chunk_index
+    local -a chunk_job_ids=()
+
+    if [[ ! "${BARCODE_CHUNK:-}" =~ ^[1-9][0-9]*$ ]]; then
+        echo "[dbitm] error: BARCODE_CHUNK must be >= 1 for per-chunk spike-align submission" >&2
+        return 1
+    fi
+
+    validate_spike_align_hpc_resources
+    submit_spike_align_job \
+        "$STEPS_DIR/03.spike_align_prepare.sh" \
+        "$SPIKE_ALIGN_PREPARE_NAME" \
+        "$SPIKE_ALIGN_PREPARE_THREADS" \
+        "${SPIKE_ALIGN_PREPARE_PARTITION:-}" \
+        "$SPIKE_ALIGN_PREPARE_MEM" \
+        "$SPIKE_ALIGN_PREPARE_TIME" \
+        "$dependency"
+    prepare_job_id=$SUBMITTED_JOB_ID
+    for ((chunk_index = 1; chunk_index <= BARCODE_CHUNK; chunk_index++)); do
+        printf -v chunk '%04d' "$chunk_index"
+        submit_spike_align_job \
+            "$(get_step_script spike-align)" \
+            "$SPIKE_ALIGN_NAME-$chunk" \
+            "$SPIKE_ALIGN_THREADS" \
+            "${SPIKE_ALIGN_PARTITION:-}" \
+            "$SPIKE_ALIGN_MEM" \
+            "$SPIKE_ALIGN_TIME" \
+            "$prepare_job_id" \
+            --chunk "$chunk"
+        chunk_job_ids+=("$SUBMITTED_JOB_ID")
+    done
+    SUBMITTED_JOB_ID=$(IFS=:; echo "${chunk_job_ids[*]}")
+    echo "[dbitm] spike-align chunk jobs: $SUBMITTED_JOB_ID"
+}
+
 run_pipeline_local() {
     local step_name
     echo "[dbitm] running selected pipeline locally: ${PIPELINE_STEPS[*]}"
@@ -337,7 +556,11 @@ submit_pipeline_hpc() {
 
     echo "[dbitm] submitting selected pipeline with Slurm dependencies: ${PIPELINE_STEPS[*]}"
     for step_name in "${PIPELINE_STEPS[@]}"; do
-        validate_hpc_resources "$step_name"
+        case "$step_name" in
+            align) validate_align_hpc_resources ;;
+            spike-align) validate_spike_align_hpc_resources ;;
+            *) validate_hpc_resources "$step_name" ;;
+        esac
     done
 
     for step_name in "${PIPELINE_STEPS[@]}"; do
@@ -351,7 +574,11 @@ submit_pipeline_hpc() {
         if (( ${#dependency_ids[@]} > 0 )); then
             dependency=$(IFS=:; echo "${dependency_ids[*]}")
         fi
-        submit_step "$step_name" "$dependency"
+        case "$step_name" in
+            align) submit_align_chunks "$dependency" ;;
+            spike-align) submit_spike_align_chunks "$dependency" ;;
+            *) submit_step "$step_name" "$dependency" ;;
+        esac
         submitted_job_ids[$step_name]=$SUBMITTED_JOB_ID
         job_summary+=("$step_name=$SUBMITTED_JOB_ID")
     done
@@ -372,7 +599,11 @@ if [[ "$RUN_MODE" == hpc ]]; then
     if [[ "$step" == all ]]; then
         submit_pipeline_hpc
     else
-        submit_step "$step"
+        case "$step" in
+            align) submit_align_chunks ;;
+            spike-align) submit_spike_align_chunks ;;
+            *) submit_step "$step" ;;
+        esac
     fi
 else
     if [[ "$step" == all ]]; then

@@ -229,6 +229,11 @@ The alignment stream passes through `sinto nametotag` to create the `CB` tag.
 Standard assays produce `NNNN.cb.bam`; SmC produces
 `NNNN.watson.cb.bam` and `NNNN.crick.cb.bam`. Logs are stored in
 `dbitm/align/logs/`. BAMs are checked but are not sorted or indexed until pool.
+In HPC mode, each numbered barcode chunk is submitted as an independent Slurm
+job. For SmC, the Watson and Crick alignments belonging to the same number run
+sequentially in that chunk job. The internal `03.align_prepare.sh` job recreates
+the shared output directory before any chunk starts. The pool job depends on
+all host chunk jobs.
 
 `03.spike_align.sh` maps each spike-in FASTQ pair independently to every
 configured spike-in reference and writes one BAM and flagstat report per
@@ -237,6 +242,10 @@ in the Watson and Crick FASTQs, so both groups are aligned with the same mate
 assignments shown above and `biscuit align -b 1`. SmC outputs retain the group
 in their names, for example `0001.watson.lambda.bam` and
 `0001.crick.lambda.bam`; discarded reads are not used as spike-in input.
+In HPC mode, each numbered barcode chunk is submitted as an independent Slurm
+job after `03.spike_align_prepare.sh` recreates the shared output directory.
+References and, for SmC, Watson/Crick inputs are processed sequentially within
+that chunk job. The pool job depends on all spike-in and host alignment jobs.
 
 ### 4.4 BAM pooling
 

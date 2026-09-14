@@ -17,19 +17,41 @@ require_index_directory() {
     fi
 }
 
-if (( $# < 2 || $# > 3 )); then
-    echo "Usage: 03.spike_align.sh <assay> <raw_fastq_folder> [--dry-run]" >&2
+if (( $# < 2 )); then
+    echo "Usage: 03.spike_align.sh <assay> <raw_fastq_folder> [--chunk NNNN] [--dry-run]" >&2
     exit 1
 fi
 assay=$1
 raw_path=$2
+shift 2
 dry_run=false
-if (( $# == 3 )); then
-    if [[ $3 != --dry-run ]]; then
-        echo "[dbitm] spike-align: unknown argument: $3" >&2
+selected_chunk=""
+while (( $# > 0 )); do
+    case "$1" in
+        --chunk)
+            if (( $# < 2 )); then
+                echo "[dbitm] spike-align: --chunk requires a chunk number" >&2
+                exit 1
+            fi
+            selected_chunk=$2
+            shift 2
+            ;;
+        --dry-run)
+            dry_run=true
+            shift
+            ;;
+        *)
+            echo "[dbitm] spike-align: unknown argument: $1" >&2
+            exit 1
+            ;;
+    esac
+done
+if [[ -n "$selected_chunk" ]]; then
+    if [[ ! "$selected_chunk" =~ ^[0-9]+$ ]] || (( 10#$selected_chunk < 1 )); then
+        echo "[dbitm] spike-align: --chunk must be a positive integer" >&2
         exit 1
     fi
-    dry_run=true
+    printf -v selected_chunk '%04d' "$((10#$selected_chunk))"
 fi
 case "$assay" in
     taps|taps-v2|emseq|cabernet|smc) ;;
@@ -144,6 +166,9 @@ if [[ "$aligner" == biscuit ]]; then
     echo "[dbitm] biscuit directional mode: $biscuit_directional_mode"
 fi
 echo "[dbitm] output directory: $final_dir/spike_align"
+if [[ -n "$selected_chunk" ]]; then
+    echo "[dbitm] selected chunk: $selected_chunk"
+fi
 
 if [[ "$dry_run" == true ]]; then
     declare -a dry_r1_files=()
@@ -172,9 +197,15 @@ if [[ "$dry_run" == true ]]; then
 fi
 
 mkdir -p "$final_dir"
-rm -rf -- "$run_output"
+if [[ -z "$selected_chunk" ]]; then
+    rm -rf -- "$run_output"
+fi
 mkdir -p "$run_output/logs"
-align_log=$run_output/spike_align.log
+if [[ -n "$selected_chunk" ]]; then
+    align_log=$run_output/spike_align.$selected_chunk.log
+else
+    align_log=$run_output/spike_align.log
+fi
 : > "$align_log"
 
 declare -a chunks=()
@@ -186,15 +217,23 @@ if [[ "$assay" == smc ]]; then
     declare -a crick_r1_files=()
     declare -a crick_r2_files=()
     declare -a crick_chunk_logs=()
-    shopt -s nullglob
-    watson_short_files=("$run_input"/*.watson.short-genomic.fastq.gz)
-    shopt -u nullglob
+    if [[ -n "$selected_chunk" ]]; then
+        watson_short_files=("$run_input/$selected_chunk.watson.short-genomic.fastq.gz")
+    else
+        shopt -s nullglob
+        watson_short_files=("$run_input"/*.watson.short-genomic.fastq.gz)
+        shopt -u nullglob
+    fi
     if (( ${#watson_short_files[@]} == 0 )); then
         echo "[dbitm] spike-align: no Watson FASTQ chunks found: $run_input/*.watson.short-genomic.fastq.gz" >&2
         exit 1
     fi
     chunk_count=${#watson_short_files[@]}
     for watson_short in "${watson_short_files[@]}"; do
+        if [[ ! -f "$watson_short" ]]; then
+            echo "[dbitm] spike-align: Watson FASTQ chunk not found: $watson_short" >&2
+            exit 1
+        fi
         filename=$(basename "$watson_short")
         chunk=${filename%.watson.short-genomic.fastq.gz}
         watson_long=$run_input/$chunk.watson.genomic.fastq.gz
@@ -221,15 +260,23 @@ if [[ "$assay" == smc ]]; then
     r2_files+=("${crick_r2_files[@]}")
     chunk_logs+=("${crick_chunk_logs[@]}")
 else
-    shopt -s nullglob
-    r1_files=("$run_input"/*.R1.spike-in.fastq.gz)
-    shopt -u nullglob
+    if [[ -n "$selected_chunk" ]]; then
+        r1_files=("$run_input/$selected_chunk.R1.spike-in.fastq.gz")
+    else
+        shopt -s nullglob
+        r1_files=("$run_input"/*.R1.spike-in.fastq.gz)
+        shopt -u nullglob
+    fi
     if (( ${#r1_files[@]} == 0 )); then
         echo "[dbitm] spike-align: no R1 spike-in FASTQ chunks found: $run_input/*.R1.spike-in.fastq.gz" >&2
         exit 1
     fi
     chunk_count=${#r1_files[@]}
     for r1 in "${r1_files[@]}"; do
+        if [[ ! -f "$r1" ]]; then
+            echo "[dbitm] spike-align: R1 spike-in FASTQ chunk not found: $r1" >&2
+            exit 1
+        fi
         filename=$(basename "$r1")
         chunk=${filename%.R1.spike-in.fastq.gz}
         r2=$run_input/$chunk.R2.spike-in.fastq.gz
@@ -243,15 +290,11 @@ else
     done
 fi
 
-parallel_jobs=$chunk_count
 align_threads_per_job=$SPIKE_ALIGN_THREADS_PER_CHUNK
-total_align_threads=$((parallel_jobs * align_threads_per_job))
 
 echo "[dbitm] chunks: $chunk_count"
 echo "[dbitm] alignments: ${#chunks[@]}"
-echo "[dbitm] parallel jobs: $parallel_jobs"
 echo "[dbitm] threads per alignment: $align_threads_per_job"
-echo "[dbitm] total aligner threads: $total_align_threads"
 
 align_spike_chunk() {
     local chunk=$1
@@ -302,40 +345,16 @@ align_spike_chunk() {
     echo "[dbitm] spike-in chunk finished: $chunk"
 }
 
-scheduler_dir=$run_output/.scheduler.$$
-mkdir "$scheduler_dir"
-declare -a worker_pids=()
-alignment_failed=false
-
-align_spike_worker() {
-    local chunk_index chunk_name
-    for chunk_index in "${!chunks[@]}"; do
-        # mkdir is the atomic claim operation shared by all worker processes.
-        # A worker that finishes early immediately claims the next task.
-        if ! mkdir "$scheduler_dir/$chunk_index" 2>/dev/null; then
-            continue
-        fi
-        chunk_name=${chunks[$chunk_index]}
-        trap 'job_status=$?; if (( job_status != 0 )); then echo "[dbitm] spike-align: chunk failed: $chunk_name" >&2; fi' EXIT
-        align_spike_chunk \
-            "$chunk_name" \
-            "${r1_files[$chunk_index]}" \
-            "${r2_files[$chunk_index]}" \
-            "${chunk_logs[$chunk_index]}"
-        trap - EXIT
-    done
-}
-
-for ((worker_index = 0; worker_index < parallel_jobs; worker_index++)); do
-    align_spike_worker &
-    worker_pids+=("$!")
+for chunk_index in "${!chunks[@]}"; do
+    chunk_name=${chunks[$chunk_index]}
+    trap 'job_status=$?; if (( job_status != 0 )); then echo "[dbitm] spike-align: chunk failed: $chunk_name" >&2; fi' EXIT
+    align_spike_chunk \
+        "$chunk_name" \
+        "${r1_files[$chunk_index]}" \
+        "${r2_files[$chunk_index]}" \
+        "${chunk_logs[$chunk_index]}"
+    trap - EXIT
 done
-for worker_pid in "${worker_pids[@]}"; do
-    if ! wait "$worker_pid"; then
-        alignment_failed=true
-    fi
-done
-rm -rf -- "$scheduler_dir"
 
 for chunk_log in "${chunk_logs[@]}"; do
     if [[ -f "$chunk_log" ]]; then
@@ -343,11 +362,7 @@ for chunk_log in "${chunk_logs[@]}"; do
         cat "$chunk_log" >> "$align_log"
     fi
 done
-if [[ "$alignment_failed" == true ]]; then
-    echo "[dbitm] spike-align: one or more chunks failed; see logs under: $run_output/logs" >&2
-    exit 1
-fi
 
-echo "[dbitm] spike-align log: $final_dir/spike_align/spike_align.log"
+echo "[dbitm] spike-align log: $align_log"
 echo "[dbitm] spike-align result: $final_dir/spike_align"
 echo "====== dbitm spike-align finished ======"
