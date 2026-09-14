@@ -16,12 +16,11 @@ import pandas as pd
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Create a tissue mask and per-spot positions from a full-resolution "
-            "image and a registered frame mask."
+            "Create a tissue mask and tissue_positions.tsv.gz from a full-resolution "
+            "image and the adjacent mask.png frame mask."
         )
     )
     parser.add_argument("--image_path", required=True, type=Path)
-    parser.add_argument("--mask_path", required=True, type=Path)
     parser.add_argument("--result_path", required=True, type=Path)
     parser.add_argument("--barcodeA_whitelist", required=True, type=Path)
     parser.add_argument("--barcodeB_whitelist", required=True, type=Path)
@@ -51,6 +50,18 @@ class GridConfig:
     pixel_length: float
 
 
+@dataclass(frozen=True)
+class FramePlacement:
+    x: int
+    y: int
+    visible_x: int
+    visible_y: int
+    visible_width: int
+    visible_height: int
+    visible_offset_x: int
+    visible_offset_y: int
+
+
 def read_barcode_components(whitelist_path: Path) -> list[str]:
     path = str(whitelist_path)
     opener = gzip.open if path.endswith(".gz") else open
@@ -74,7 +85,34 @@ def frame_region_from_mask(mask: np.ndarray) -> np.ndarray:
     return grayscale > 0
 
 
-def locate_frame(mask_path: Path, image_shape) -> tuple[np.ndarray, tuple[int, int, int, int]]:
+def infer_axis_placement(
+    start: int,
+    extent: int,
+    canvas_extent: int,
+    expected_extent: int,
+    axis_name: str,
+) -> tuple[int, int]:
+    if extent >= expected_extent:
+        return start, 0
+
+    touches_low = start == 0
+    touches_high = start + extent == canvas_extent
+    if touches_low == touches_high:
+        raise ValueError(
+            f"Visible frame {axis_name} extent {extent} is smaller than the "
+            f"configured extent {expected_extent}, but it does not touch exactly "
+            f"one image boundary; the clipped-frame position is ambiguous"
+        )
+    if touches_low:
+        return start + extent - expected_extent, expected_extent - extent
+    return start, 0
+
+
+def locate_frame(
+    mask_path: Path,
+    image_shape,
+    expected_size: tuple[int, int],
+) -> tuple[np.ndarray, FramePlacement]:
     mask = cv2.imread(str(mask_path), cv2.IMREAD_UNCHANGED)
     if mask is None:
         raise ValueError(f"Unable to read frame mask: {mask_path}")
@@ -87,7 +125,32 @@ def locate_frame(mask_path: Path, image_shape) -> tuple[np.ndarray, tuple[int, i
     nonzero = cv2.findNonZero(frame_region.astype(np.uint8))
     if nonzero is None:
         raise ValueError(f"Frame mask contains no nonzero region: {mask_path}")
-    return frame_region, cv2.boundingRect(nonzero)
+    visible_x, visible_y, visible_width, visible_height = cv2.boundingRect(nonzero)
+    expected_width, expected_height = expected_size
+    frame_x, visible_offset_x = infer_axis_placement(
+        visible_x,
+        visible_width,
+        image_shape[1],
+        expected_width,
+        "horizontal",
+    )
+    frame_y, visible_offset_y = infer_axis_placement(
+        visible_y,
+        visible_height,
+        image_shape[0],
+        expected_height,
+        "vertical",
+    )
+    return frame_region, FramePlacement(
+        x=frame_x,
+        y=frame_y,
+        visible_x=visible_x,
+        visible_y=visible_y,
+        visible_width=visible_width,
+        visible_height=visible_height,
+        visible_offset_x=visible_offset_x,
+        visible_offset_y=visible_offset_y,
+    )
 
 
 def grayscale_uint8(image: np.ndarray) -> np.ndarray:
@@ -182,6 +245,10 @@ def build_tissue_positions(
     tissue_mask: np.ndarray,
     frame_x: int,
     frame_y: int,
+    visible_offset_x: int,
+    visible_offset_y: int,
+    image_width: int,
+    image_height: int,
     grid: GridConfig,
     barcode_as: list[str],
     barcode_bs: list[str],
@@ -201,21 +268,38 @@ def build_tissue_positions(
     for row in range(grid.row_count):
         for col in range(grid.col_count):
             x_start, y_start, x_end, y_end = spot_bounds(row, col, grid)
-            spot_mask = tissue_mask[y_start:y_end, x_start:x_end]
-            if spot_mask.size == 0:
-                raise ValueError(
-                    f"Spot ({row}, {col}) falls outside frame size "
-                    f"{tissue_mask.shape[1]}x{tissue_mask.shape[0]}"
-                )
-            tissue_fraction = float(np.count_nonzero(spot_mask)) / spot_mask.size
+            visible_x_start = max(0, x_start - visible_offset_x)
+            visible_y_start = max(0, y_start - visible_offset_y)
+            visible_x_end = min(tissue_mask.shape[1], x_end - visible_offset_x)
+            visible_y_end = min(tissue_mask.shape[0], y_end - visible_offset_y)
+            tissue_pixels = 0
+            if (
+                visible_x_start < visible_x_end
+                and visible_y_start < visible_y_end
+            ):
+                spot_mask = tissue_mask[
+                    visible_y_start:visible_y_end,
+                    visible_x_start:visible_x_end,
+                ]
+                tissue_pixels = int(np.count_nonzero(spot_mask))
+            spot_area = (x_end - x_start) * (y_end - y_start)
+            tissue_fraction = tissue_pixels / spot_area
+            center_x = frame_x + (x_start + x_end) // 2
+            center_y = frame_y + (y_start + y_end) // 2
+            center_in_image = (
+                0 <= center_x < image_width and 0 <= center_y < image_height
+            )
             records.append(
                 {
                     "barcode": barcode_bs[col] + barcode_as[row],
-                    "in_tissue": 1 if tissue_fraction >= MIN_TISSUE_FRACTION else 0,
+                    "in_tissue": int(
+                        center_in_image
+                        and tissue_fraction >= MIN_TISSUE_FRACTION
+                    ),
                     "array_row": row,
                     "array_col": col,
-                    "pxl_row_in_fullres": frame_y + (y_start + y_end) // 2,
-                    "pxl_col_in_fullres": frame_x + (x_start + x_end) // 2,
+                    "pxl_row_in_fullres": center_y,
+                    "pxl_col_in_fullres": center_x,
                 }
             )
     return pd.DataFrame.from_records(
@@ -233,7 +317,6 @@ def build_tissue_positions(
 
 def process_image(
     image_path: Path,
-    mask_path: Path,
     result_path: Path,
     grid: GridConfig,
     barcode_a_whitelist: Path,
@@ -242,58 +325,74 @@ def process_image(
     image = cv2.imread(str(image_path), cv2.IMREAD_UNCHANGED)
     if image is None:
         raise ValueError(f"Unable to read image: {image_path}")
-    if not mask_path.is_file():
-        raise FileNotFoundError(f"Frame mask not found: {mask_path}")
+    frame_mask_path = image_path.with_name("mask.png")
+    if not frame_mask_path.is_file():
+        raise FileNotFoundError(f"Adjacent frame mask not found: {frame_mask_path}")
 
-    frame_region_full, (frame_x, frame_y, frame_width, frame_height) = locate_frame(
-        mask_path, image.shape
+    expected_width = int(
+        (
+            grid.col_count * grid.length_spot
+            + (grid.col_count - 1) * grid.interval
+        )
+        / grid.pixel_length
+    )
+    expected_height = int(
+        (
+            grid.row_count * grid.length_spot
+            + (grid.row_count - 1) * grid.interval
+        )
+        / grid.pixel_length
+    )
+    frame_region_full, placement = locate_frame(
+        frame_mask_path,
+        image.shape,
+        (expected_width, expected_height),
     )
     frame_image = image[
-        frame_y : frame_y + frame_height,
-        frame_x : frame_x + frame_width,
+        placement.visible_y : placement.visible_y + placement.visible_height,
+        placement.visible_x : placement.visible_x + placement.visible_width,
     ]
     frame_region = frame_region_full[
-        frame_y : frame_y + frame_height,
-        frame_x : frame_x + frame_width,
+        placement.visible_y : placement.visible_y + placement.visible_height,
+        placement.visible_x : placement.visible_x + placement.visible_width,
     ]
-
-    _, _, expected_width, expected_height = spot_bounds(
-        grid.row_count - 1, 0, grid
-    )
-    if frame_width < expected_width or frame_height < expected_height:
-        raise ValueError(
-            f"Frame region {frame_width}x{frame_height} is smaller than the "
-            f"configured grid requirement {expected_width}x{expected_height}"
-        )
 
     result_path.mkdir(parents=True, exist_ok=True)
     grayscale_path = save_fullres_grayscale(
         image,
-        result_path / "meth-fullres_grayscale.png",
+        result_path / "fullres_grayscale.png",
     )
     tissue_mask = generate_tissue_mask(
         frame_image,
         frame_region,
-        result_path / "meth-tissue_mask.png",
+        result_path / "tissue_mask.png",
     )
     positions = build_tissue_positions(
         tissue_mask,
-        frame_x,
-        frame_y,
+        placement.x,
+        placement.y,
+        placement.visible_offset_x,
+        placement.visible_offset_y,
+        image.shape[1],
+        image.shape[0],
         grid,
         read_barcode_components(barcode_a_whitelist),
         read_barcode_components(barcode_b_whitelist),
     )
-    output_path = result_path / "meth-tissue_positions.tsv.gz"
+    output_path = result_path / "tissue_positions.tsv.gz"
     positions.to_csv(output_path, sep="\t", index=False, compression="gzip")
     print(
-        f"Frame bbox: x={frame_x}, y={frame_y}, "
-        f"width={frame_width}, height={frame_height}"
+        f"Frame bbox: x={placement.x}, y={placement.y}, "
+        f"width={expected_width}, height={expected_height}"
+    )
+    print(
+        f"Visible frame bbox: x={placement.visible_x}, y={placement.visible_y}, "
+        f"width={placement.visible_width}, height={placement.visible_height}"
     )
     tissue_spots = int((positions["in_tissue"] == 1).sum())
     print(f"Tissue spots: {tissue_spots}/{len(positions)}")
     print(f"Wrote full-resolution grayscale image: {grayscale_path.resolve()}")
-    print(f"Wrote tissue mask: {(result_path / 'meth-tissue_mask.png').resolve()}")
+    print(f"Wrote tissue mask: {(result_path / 'tissue_mask.png').resolve()}")
     print(f"Wrote tissue positions: {output_path.resolve()}")
     return positions
 
@@ -302,7 +401,6 @@ def main() -> None:
     args = parse_args()
     process_image(
         image_path=args.image_path,
-        mask_path=args.mask_path,
         result_path=args.result_path,
         grid=GridConfig(
             args.x_spots_number,

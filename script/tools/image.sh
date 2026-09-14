@@ -42,9 +42,11 @@ source "$config_file"
 
 image_path=$(realpath "$image_path")
 image_dir=$(dirname "$image_path")
-mask_path=$image_dir/meth-mask.png
-output_dir=$image_dir/meth-image
-methscan_dir=$(realpath -m "$(dirname "$image_dir")/meth/dbitm/methscan")
+sample_dir=$(dirname "$image_dir")
+mask_path=$image_dir/mask.png
+output_dir=$image_dir/image-segmentation
+methscan_dir=$(realpath -m "$sample_dir/dbitm/methscan")
+matrix_root=$(realpath -m "$sample_dir/matrix")
 if [[ ! -f "$mask_path" ]]; then
     echo "[dbitm] image: adjacent registered mask not found: $mask_path" >&2
     exit 1
@@ -69,9 +71,9 @@ if [[ ! "$spot_count" =~ ^[1-9][0-9]*$ ]]; then
     exit 1
 fi
 
-spot_length=${SUMMARY_FRAME_SPOT_LENGTH:-50}
-interval=${SUMMARY_FRAME_INTERVAL:-50}
-pixel_length=${SUMMARY_FRAME_PIXEL_LENGTH:-0.294}
+spot_length=${SUMMARY_FRAME_SPOT_LENGTH}
+interval=${SUMMARY_FRAME_INTERVAL}
+pixel_length=${SUMMARY_FRAME_PIXEL_LENGTH}
 if [[ ! "$spot_length" =~ ^[1-9][0-9]*$ ]]; then
     echo "[dbitm] image: SUMMARY_FRAME_SPOT_LENGTH must be > 0" >&2
     exit 1
@@ -88,7 +90,6 @@ fi
 
 declare -a segment_args=(
     --image_path "$image_path"
-    --mask_path "$mask_path"
     --result_path "$output_dir"
     --barcodeA_whitelist "$barcode_whitelist"
     --barcodeB_whitelist "$barcode_whitelist"
@@ -100,12 +101,17 @@ declare -a segment_args=(
 )
 
 declare -a matrix_dirs=()
+declare -a matrix_targets=()
 if [[ -d "$methscan_dir" ]]; then
     while IFS= read -r -d '' matrix_dir; do
         if [[ -f "$matrix_dir/matrix.mtx.gz" && \
               -f "$matrix_dir/barcodes.tsv.gz" && \
               -f "$matrix_dir/features.tsv.gz" ]]; then
             matrix_dirs+=("$matrix_dir")
+            relative_dir=${matrix_dir#"$methscan_dir"/}
+            context=${relative_dir%%/*}
+            matrix_name=$(basename "$matrix_dir")
+            matrix_targets+=("$matrix_root/$context/$matrix_name")
         else
             echo "[dbitm] image: skipping incomplete 10x directory: $matrix_dir" >&2
         fi
@@ -123,7 +129,8 @@ echo "[dbitm] source image: $image_path"
 echo "[dbitm] frame mask: $mask_path"
 echo "[dbitm] output directory: $output_dir"
 echo "[dbitm] MethSCAn directory: $methscan_dir"
-echo "[dbitm] 10x copy targets: ${#matrix_dirs[@]}"
+echo "[dbitm] matrix directory: $matrix_root"
+echo "[dbitm] complete 10x matrices: ${#matrix_dirs[@]}"
 echo "[dbitm] barcode whitelist: $barcode_whitelist"
 echo "[dbitm] chip size: ${spot_count}x${spot_count}"
 echo "[dbitm] spot length: $spot_length"
@@ -135,9 +142,11 @@ if [[ "$dry_run" == true ]]; then
     printf ' %q' pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default \
         python "$segment_script" "${segment_args[@]}"
     printf '\n'
-    for matrix_dir in "${matrix_dirs[@]}"; do
-        echo "[dbitm] planned copy: $output_dir/meth-tissue_positions.tsv.gz -> $matrix_dir/tissue_positions.tsv.gz"
-        echo "[dbitm] planned copy: $output_dir/meth-fullres_grayscale.png -> $matrix_dir/tissue_raw_image.png"
+    for index in "${!matrix_dirs[@]}"; do
+        matrix_dir=${matrix_dirs[$index]}
+        matrix_target=${matrix_targets[$index]}
+        echo "[dbitm] planned 10x bundle: $matrix_dir -> $matrix_target"
+        echo "[dbitm] planned image metadata: $output_dir/tissue_positions.tsv.gz and $output_dir/fullres_grayscale.png -> $matrix_target"
     done
     echo "[dbitm] dry-run: no files will be written"
     echo "====== dbitm image segmentation dry-run finished ======"
@@ -148,19 +157,31 @@ mkdir -p "$output_dir"
 pixi run --manifest-path "$REPO_DIR/pixi.toml" -e default \
     python "$segment_script" "${segment_args[@]}" \
     2>&1 | tee "$output_dir/meth-seg.log"
-positions_path=$output_dir/meth-tissue_positions.tsv.gz
-grayscale_path=$output_dir/meth-fullres_grayscale.png
+positions_path=$output_dir/tissue_positions.tsv.gz
+grayscale_path=$output_dir/fullres_grayscale.png
 if [[ ! -f "$positions_path" || ! -f "$grayscale_path" ]]; then
     echo "[dbitm] image: required segmentation outputs are missing" >&2
     exit 1
 fi
-for matrix_dir in "${matrix_dirs[@]}"; do
-    cp -f -- "$positions_path" "$matrix_dir/tissue_positions.tsv.gz"
-    cp -f -- "$grayscale_path" "$matrix_dir/tissue_raw_image.png"
-    echo "[dbitm] copied image outputs: $matrix_dir"
+mkdir -p "$matrix_root"
+for index in "${!matrix_dirs[@]}"; do
+    matrix_dir=${matrix_dirs[$index]}
+    matrix_target=${matrix_targets[$index]}
+    mkdir -p "$matrix_target"
+    cp -f -- \
+        "$matrix_dir/matrix.mtx.gz" \
+        "$matrix_dir/barcodes.tsv.gz" \
+        "$matrix_dir/features.tsv.gz" \
+        "$matrix_target/"
+    cp -f -- "$positions_path" "$matrix_target/tissue_positions.tsv.gz"
+    cp -f -- "$grayscale_path" "$matrix_target/tissue_raw_image.png"
+    echo "[dbitm] wrote 10x image bundle: $matrix_target"
 done
 if (( ${#matrix_dirs[@]} == 0 )); then
-    echo "[dbitm] image: warning: no complete MethSCAn 10x directories found; no outputs copied" >&2
+    cp -f -- "$positions_path" "$matrix_root/tissue_positions.tsv.gz"
+    cp -f -- "$grayscale_path" "$matrix_root/tissue_raw_image.png"
+    echo "[dbitm] image: warning: no complete MethSCAn 10x directories found; wrote image metadata only" >&2
 fi
-echo "[dbitm] tissue positions: $output_dir/meth-tissue_positions.tsv.gz"
+echo "[dbitm] tissue positions: $positions_path"
+echo "[dbitm] matrix bundles: $matrix_root"
 echo "====== dbitm image segmentation finished ======"

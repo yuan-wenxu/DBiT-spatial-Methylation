@@ -459,7 +459,7 @@ pixi run -e default python script/steps/python/09.dense_to_10x.py \
 ### 4.10 Image segmentation
 
 The standalone `image` tool accepts a full-resolution image rather than a
-FASTQ directory and reads an adjacent `meth-mask.png`. The assay-specific
+FASTQ directory and reads an adjacent `mask.png`. The assay-specific
 barcode whitelist determines both grid dimensions; spot length, interval, and
 pixel size reuse the `SUMMARY_FRAME_*` settings so image positions match the
 registration frame. Its segmentation implementation is under
@@ -473,10 +473,10 @@ dbitm taps image --input /path/to/WT-brain-S22.png
 Results are isolated from other image workflows:
 
 ```text
-image/meth-image/
-├── meth-fullres_grayscale.png
-├── meth-tissue_mask.png
-├── meth-tissue_positions.tsv.gz
+image/image-segmentation/
+├── fullres_grayscale.png
+├── tissue_mask.png
+├── tissue_positions.tsv.gz
 └── meth-seg.log
 ```
 
@@ -488,12 +488,23 @@ an image instead of the raw FASTQ directory.
 
 After segmentation, the tool discovers complete `methylation_fractions` and
 `mean_shrunken_residuals` 10x directories below the sample MethSCAn root. It
-copies `meth-tissue_positions.tsv.gz` as `tissue_positions.tsv.gz` and
-`meth-fullres_grayscale.png` as `tissue_raw_image.png` beside each
-`matrix.mtx.gz`. The MethSCAn root is fixed at
-`<sample>/meth/dbitm/methscan` for an image under `<sample>/image`. When no
-complete 10x directory exists, segmentation still succeeds and reports that
-no copy was performed.
+creates a sample-level `matrix` directory and copies each sparse matrix plus
+the image metadata into a standalone bundle:
+
+```text
+matrix/<context>/<matrix-type>/
+├── matrix.mtx.gz
+├── barcodes.tsv.gz
+├── features.tsv.gz
+├── tissue_positions.tsv.gz
+└── tissue_raw_image.png
+```
+
+For an image under `<sample>/image`, MethSCAn input is read from
+`<sample>/dbitm/methscan` and bundles are written under `<sample>/matrix`.
+When no complete 10x directory exists, segmentation still succeeds and writes
+`tissue_positions.tsv.gz` and `tissue_raw_image.png` directly under the new
+`matrix` directory.
 
 ## 5. Output and scratch behavior
 
