@@ -70,7 +70,7 @@ BISCUIT_DIRECTIONAL_MODE=${BISCUIT_DIRECTIONAL_MODE:-1}
 
 # BAM pooling configuration
 # per-thread memory for samtools sort (defaults to POOL_MEM/POOL_THREADS if empty)
-POOL_SORT_MEM=${POOL_SORT_MEM:-48G}
+POOL_SORT_MEM=${POOL_SORT_MEM:-12G}
 
 # M-bias configuration
 # all: host and configured spike-ins; host: host only; spike: spike-ins only
@@ -168,7 +168,7 @@ SPIKE_ALIGN_PREPARE_TIME=${SPIKE_ALIGN_PREPARE_TIME:-00:30:00}
 POOL_NAME=${POOL_NAME:-pool}
 POOL_THREADS=${POOL_THREADS:-4}
 POOL_PARTITION=${POOL_PARTITION:-}
-POOL_MEM=${POOL_MEM:-256G}
+POOL_MEM=${POOL_MEM:-64G}
 POOL_TIME=${POOL_TIME:-48:00:00}
 
 MBIAS_NAME=${MBIAS_NAME:-mbias}
