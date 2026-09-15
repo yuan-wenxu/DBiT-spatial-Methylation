@@ -66,30 +66,37 @@ converter=$SCRIPT_DIR/python/09.dense_to_10x.py
 
 context_mode=${CALL_CONTEXT_MODE}
 case "$context_mode" in
-    cg) methscan_contexts=(CG) ;;
-    ch) methscan_contexts=(CA CC CT) ;;
-    both) methscan_contexts=(CG CA CC CT) ;;
+    cg) requested_methscan_contexts=(CG) ;;
+    ch) requested_methscan_contexts=(CA CC CT) ;;
+    both) requested_methscan_contexts=(CG CA CC CT) ;;
     *) echo "[dbitm] methscan: CALL_CONTEXT_MODE must be cg, ch, or both" >&2; exit 1 ;;
 esac
 
 methscan_chunksize=${METHSCAN_CHUNKSIZE}
 declare -A methscan_min_sites_by_context=(
-    [CG]="${METHSCAN_CG_MIN_SITES}"
-    [CA]="${METHSCAN_CA_MIN_SITES}"
-    [CC]="${METHSCAN_CC_MIN_SITES}"
-    [CT]="${METHSCAN_CT_MIN_SITES}"
+    [CG]="${METHSCAN_CG_MIN_SITES:-}"
+    [CA]="${METHSCAN_CA_MIN_SITES:-}"
+    [CC]="${METHSCAN_CC_MIN_SITES:-}"
+    [CT]="${METHSCAN_CT_MIN_SITES:-}"
 )
 methscan_threads=${METHSCAN_THREADS}
 if [[ ! "$methscan_chunksize" =~ ^[1-9][0-9]*$ ]]; then
     echo "[dbitm] methscan: METHSCAN_CHUNKSIZE must be greater than zero" >&2
     exit 1
 fi
-for methscan_context in "${methscan_contexts[@]}"; do
+methscan_contexts=()
+skipped_methscan_contexts=()
+for methscan_context in "${requested_methscan_contexts[@]}"; do
     methscan_min_sites=${methscan_min_sites_by_context[$methscan_context]}
+    if [[ -z "$methscan_min_sites" ]]; then
+        skipped_methscan_contexts+=("$methscan_context")
+        continue
+    fi
     if [[ ! "$methscan_min_sites" =~ ^[1-9][0-9]*$ ]]; then
         echo "[dbitm] methscan: METHSCAN_${methscan_context}_MIN_SITES must be greater than zero" >&2
         exit 1
     fi
+    methscan_contexts+=("$methscan_context")
 done
 if [[ ! "$methscan_threads" =~ ^[1-9][0-9]*$ ]]; then
     echo "[dbitm] methscan: METHSCAN_THREADS must be greater than zero" >&2
@@ -98,7 +105,7 @@ fi
 
 echo "====== dbitm MethSCAn matrices ======"
 echo "[dbitm] assay: $assay"
-echo "[dbitm] contexts: ${methscan_contexts[*]}"
+echo "[dbitm] contexts: ${methscan_contexts[*]:-none}"
 echo "[dbitm] coverage directory: $coverage_dir"
 echo "[dbitm] output directory: $output_dir"
 for methscan_context in "${methscan_contexts[@]}"; do
@@ -106,6 +113,12 @@ for methscan_context in "${methscan_contexts[@]}"; do
 done
 echo "[dbitm] threads: $methscan_threads"
 echo "[dbitm] config: $config_file"
+
+if (( ${#methscan_contexts[@]} == 0 )); then
+    echo "[dbitm] methscan: no contexts enabled; nothing to do"
+    echo "====== dbitm MethSCAn matrices finished ======"
+    exit 0
+fi
 
 if [[ "$dry_run" == true ]]; then
     if [[ -n ${SCRATCH_ROOT:-} && "$SCRATCH_ROOT" != /* ]]; then

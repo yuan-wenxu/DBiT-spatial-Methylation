@@ -431,9 +431,14 @@ context:
 prepare -> filter -> smooth -> scan -> matrix -> 10x sparse export
 ```
 
-Outputs are stored under `dbitm/methscan/CG`, `CA`, `CC`, and `CT`. Each selected
-directory contains VMRs and spot-by-VMR matrices. Missing matrix values mean no
-usable observation, not zero methylation.
+`CALL_CONTEXT_MODE` determines the candidate contexts. A candidate is processed
+only when its `METHSCAN_<CONTEXT>_MIN_SITES` setting is defined and non-empty;
+otherwise it is skipped. If no candidate context is enabled, the stage exits
+successfully without creating results.
+
+Outputs are stored under `dbitm/methscan/<context>`. Each selected directory
+contains VMRs and spot-by-VMR matrices. Missing matrix values mean no usable
+observation, not zero methylation.
 
 After `methscan matrix` finishes, the same stage converts
 `methylation_fractions.csv.gz` and `mean_shrunken_residuals.csv.gz`. For each
