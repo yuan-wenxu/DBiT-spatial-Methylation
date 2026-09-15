@@ -13,6 +13,7 @@ import statistics
 import sys
 import tempfile
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Optional
 
@@ -65,6 +66,12 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--output-dir")
     parser.add_argument("--cb-tag", default="CB")
     parser.add_argument(
+        "--threads",
+        type=int,
+        default=1,
+        help="Parallel input-scan workers. Default: 1.",
+    )
+    parser.add_argument(
         "--reads-threshold",
         type=float,
         default=1_000_000.0,
@@ -87,6 +94,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--pred-fraction must be > 0")
     if not 0 < args.linear_r2_threshold <= 1:
         raise ValueError("--linear-r2-threshold must be in (0, 1]")
+    if args.threads <= 0:
+        raise ValueError("--threads must be > 0")
 
 
 def format_optional_int(value: Optional[float]) -> str:
@@ -124,13 +133,18 @@ def load_cb_to_spot(path: Path, c_to_t: bool = False) -> dict[str, str]:
 
 
 def count_spot_reads(
-    bam_paths: list[Path], cb_tag: str, cb_to_spot: dict[str, str]
+    bam_paths: list[Path],
+    cb_tag: str,
+    cb_to_spot: dict[str, str],
+    bam_threads: int = 1,
 ) -> dict[str, int]:
     counts: dict[str, int] = defaultdict(int)
     for bam_path in bam_paths:
         if not bam_path.is_file():
             raise FileNotFoundError(f"host BAM not found: {bam_path}")
-        with pysam.AlignmentFile(str(bam_path), "rb") as bam:
+        with pysam.AlignmentFile(
+            str(bam_path), "rb", threads=max(1, bam_threads)
+        ) as bam:
             for record in bam.fetch(until_eof=True):
                 try:
                     cb_value = str(record.get_tag(cb_tag)).upper()
@@ -226,6 +240,36 @@ def parse_barcoded_cov_histograms(
                 histogram = histograms.setdefault(spot, {})
                 histogram[depth] = histogram.get(depth, 0) + 1
     return histograms
+
+
+def scan_saturation_inputs(
+    bam_paths: list[Path],
+    cb_tag: str,
+    cb_to_spot: dict[str, str],
+    coverage_path: Path,
+    included_spots: set[str],
+    threads: int,
+) -> tuple[dict[str, int], dict[str, dict[int, int]]]:
+    """Scan BAM and coverage concurrently when workers are available."""
+    if threads == 1:
+        return (
+            count_spot_reads(bam_paths, cb_tag, cb_to_spot),
+            parse_barcoded_cov_histograms(coverage_path, included_spots),
+        )
+
+    bam_threads = max(1, threads - 1)
+    with ProcessPoolExecutor(max_workers=1) as executor:
+        reads_future = executor.submit(
+            count_spot_reads,
+            bam_paths,
+            cb_tag,
+            cb_to_spot,
+            bam_threads,
+        )
+        histograms = parse_barcoded_cov_histograms(
+            coverage_path, included_spots
+        )
+        return reads_future.result(), histograms
 
 
 def expected_unique(histogram: dict[int, int], fraction: float) -> float:
@@ -657,6 +701,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         barcode_c_to_t = args.assay in {"emseq", "cabernet"}
         excluded_spots = SMC_EXCLUDED_SPOTS if args.assay == "smc" else frozenset()
         print(f"[saturation] assay={args.assay}")
+        print(f"[saturation] scan-threads={args.threads}")
         print(f"[saturation] barcode-c-to-t={str(barcode_c_to_t).lower()}")
         print(f"[saturation] work-dir={work_dir}")
         print(
@@ -702,12 +747,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             )
         else:
             cb_to_spot = load_cb_to_spot(manifest_path, c_to_t=barcode_c_to_t)
-            all_spot_reads = count_spot_reads(bam_paths, args.cb_tag, cb_to_spot)
             if not coverage_path.is_file():
                 raise FileNotFoundError(f"host CG coverage not found: {coverage_path}")
             included_spots = set(cb_to_spot.values()) - excluded_spots
-            spot_histograms = parse_barcoded_cov_histograms(
-                coverage_path, included_spots
+            all_spot_reads, spot_histograms = scan_saturation_inputs(
+                bam_paths,
+                args.cb_tag,
+                cb_to_spot,
+                coverage_path,
+                included_spots,
+                args.threads,
             )
             spot_reads = {
                 spot: all_spot_reads.get(spot, 0) for spot in spot_histograms

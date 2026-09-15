@@ -13,6 +13,7 @@ import statistics
 import sys
 import tempfile
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Optional
 
@@ -84,6 +85,12 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--output-dir")
     parser.add_argument("--cb-tag", default="CB")
     parser.add_argument("--min-mapping-quality", type=int, default=10)
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=1,
+        help="Parallel input-scan workers. Default: 1.",
+    )
     parser.add_argument(
         "--context-mode",
         choices=("cg", "ch", "both"),
@@ -260,6 +267,7 @@ def count_host_metrics(
     cb_tag: str,
     cb_to_spot: dict[str, str],
     minimum_mapq: int,
+    bam_threads: int = 1,
 ) -> tuple[dict[str, int], Optional[int], Optional[int]]:
     spot_counts: dict[str, int] = defaultdict(int)
     mapped_reads = 0
@@ -267,35 +275,36 @@ def count_host_metrics(
     if any(not path.is_file() for path in bam_paths):
         return {}, None, None
     for bam_path in bam_paths:
-        with pysam.AlignmentFile(str(bam_path), "rb") as bam:
+        with pysam.AlignmentFile(
+            str(bam_path), "rb", threads=max(1, bam_threads)
+        ) as bam:
             for record in bam.fetch(until_eof=True):
                 try:
                     cb_value = str(record.get_tag(cb_tag)).upper()
                 except KeyError:
                     cb_value = ""
-                if (
-                    cb_value
-                    and is_unique_mapped(record, minimum_mapq)
-                    and not record.is_secondary
-                    and not record.is_supplementary
-                ):
-                    spot = cb_to_spot.get(cb_value)
-                    if spot is not None:
-                        spot_counts[spot] += 1
                 if not is_unique_mapped(record, minimum_mapq):
                     continue
                 mapped_reads += 1
                 if record.flag in VALID_FLAGS:
                     valid_reads += 1
+                if cb_value:
+                    spot = cb_to_spot.get(cb_value)
+                    if spot is not None:
+                        spot_counts[spot] += 1
     return dict(spot_counts), mapped_reads, valid_reads
 
 
-def count_mapped_reads(paths: list[Path], minimum_mapq: int) -> Optional[int]:
+def count_mapped_reads(
+    paths: list[Path], minimum_mapq: int, bam_threads: int = 1
+) -> Optional[int]:
     if any(not path.is_file() for path in paths):
         return None
     count = 0
     for path in paths:
-        with pysam.AlignmentFile(str(path), "rb") as bam:
+        with pysam.AlignmentFile(
+            str(path), "rb", threads=max(1, bam_threads)
+        ) as bam:
             for record in bam.fetch(until_eof=True):
                 if is_unique_mapped(record, minimum_mapq):
                     count += 1
@@ -342,12 +351,17 @@ def summarize_spots(
     spot_counts: dict[str, int],
     positions: dict[str, tuple[str, str]],
     excluded_spots: frozenset[str] = frozenset(),
+    context_stats: Optional[dict[str, dict[str, tuple[float, int]]]] = None,
 ) -> list[dict[str, str]]:
-    context_stats: dict[str, dict[str, Optional[tuple[float, int]]]] = {}
+    loaded_context_stats: dict[str, dict[str, tuple[float, int]]] = {}
     observed_spots = set(positions) | set(spot_counts)
     for context, cov_path in context_cov_paths.items():
-        cov_stats = parse_barcoded_cov_stats(cov_path)
-        context_stats[context] = cov_stats
+        cov_stats = (
+            parse_barcoded_cov_stats(cov_path)
+            if context_stats is None
+            else context_stats.get(context, {})
+        )
+        loaded_context_stats[context] = cov_stats
         observed_spots.update(cov_stats)
     observed_spots.difference_update(excluded_spots)
 
@@ -357,12 +371,63 @@ def summarize_spots(
         row = {"row_index": row_index, "col_index": column_index, "spot": spot}
         for context in context_cov_paths:
             spec = CONTEXT_SPECS[context]
-            stats = context_stats[context].get(spot)
+            stats = loaded_context_stats[context].get(spot)
             row[str(spec["mean_field"])] = format_float(stats[0] if stats else None)
             row[str(spec["site_field"])] = format_int(stats[1] if stats else None)
         row["reads"] = str(spot_counts.get(spot, 0))
         rows.append(row)
     return rows
+
+
+def scan_summary_host_inputs(
+    bam_paths: list[Path],
+    cb_tag: str,
+    cb_to_spot: dict[str, str],
+    minimum_mapq: int,
+    context_cov_paths: dict[str, Path],
+    threads: int,
+) -> tuple[
+    dict[str, int],
+    Optional[int],
+    Optional[int],
+    dict[str, dict[str, tuple[float, int]]],
+]:
+    """Scan the host BAM and context coverage files concurrently."""
+    if threads == 1:
+        spot_counts, mapped_reads, valid_reads = count_host_metrics(
+            bam_paths,
+            cb_tag,
+            cb_to_spot,
+            minimum_mapq,
+        )
+        context_stats = {
+            context: parse_barcoded_cov_stats(path)
+            for context, path in context_cov_paths.items()
+        }
+        return spot_counts, mapped_reads, valid_reads, context_stats
+
+    task_count = 1 + len(context_cov_paths)
+    max_workers = min(threads, task_count)
+    bam_threads = max(1, threads - len(context_cov_paths))
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        bam_future = executor.submit(
+            count_host_metrics,
+            bam_paths,
+            cb_tag,
+            cb_to_spot,
+            minimum_mapq,
+            bam_threads,
+        )
+        context_futures = {
+            context: executor.submit(parse_barcoded_cov_stats, path)
+            for context, path in context_cov_paths.items()
+        }
+        spot_counts, mapped_reads, valid_reads = bam_future.result()
+        context_stats = {
+            context: future.result()
+            for context, future in context_futures.items()
+        }
+    return spot_counts, mapped_reads, valid_reads, context_stats
 
 
 def mean_from_rows(
@@ -666,6 +731,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.min_mapping_quality < 0:
         print("[summary] error: --min-mapping-quality must be >= 0", file=sys.stderr)
         return 1
+    if args.threads <= 0:
+        print("[summary] error: --threads must be > 0", file=sys.stderr)
+        return 1
     if args.frame_spot_length <= 0:
         print("[summary] error: --frame-spot-length must be > 0", file=sys.stderr)
         return 1
@@ -722,6 +790,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     print(f"[summary] work-dir={work_dir}")
     print(f"[summary] assay={args.assay}")
+    print(f"[summary] scan-threads={args.threads}")
     print(f"[summary] context-mode={args.context_mode}")
     print(f"[summary] barcode-whitelist={args.barcode_whitelist}")
     print(f"[summary] chip-size={chip_size}x{chip_size}")
@@ -751,17 +820,25 @@ def main(argv: Optional[list[str]] = None) -> int:
             manifest_path,
             c_to_t=args.assay in {"emseq", "cabernet"},
         )
-        spot_counts, host_mapped, host_valid = count_host_metrics(
+        (
+            spot_counts,
+            host_mapped,
+            host_valid,
+            context_stats,
+        ) = scan_summary_host_inputs(
             host_bams,
             args.cb_tag,
             cb_to_spot,
             args.min_mapping_quality,
+            host_cov_paths,
+            args.threads,
         )
         per_spot_rows = summarize_spots(
             host_cov_paths,
             spot_counts,
             positions,
             excluded_spots,
+            context_stats,
         )
         if not per_spot_rows:
             raise ValueError("no per-spot coverage or CB-tagged reads were found")
@@ -841,7 +918,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                 spike_bams = [
                     work_dir / "pooled" / f"pooled.{spike_name}.bam"
                 ]
-            mapped = count_mapped_reads(spike_bams, args.min_mapping_quality)
+            mapped = count_mapped_reads(
+                spike_bams,
+                args.min_mapping_quality,
+                args.threads,
+            )
             sample_row[f"{spike_name}_mapped_reads"] = format_int(mapped)
         sample_row["host_valid_reads"] = format_int(host_valid)
         sample_row["valid_reads_rate"] = format_percentage(host_valid, raw_reads)
