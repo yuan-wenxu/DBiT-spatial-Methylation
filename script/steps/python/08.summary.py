@@ -26,6 +26,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pysam
+from matplotlib.ticker import StrMethodFormatter
 from PIL import Image, ImageDraw
 
 
@@ -33,6 +34,7 @@ VALID_FLAGS = {83, 99, 147, 163}
 CH_CONTEXTS = ("ca", "cc", "ct")
 SMC_EXCLUDED_SPOTS = frozenset({"00_01"})
 FRAME_BORDER_COLOR = "#D55E00"
+COLORBAR_TICK_DECIMALS = 2
 CONTEXT_SPECS = {
     "cg": {
         "suffix": "CG",
@@ -659,6 +661,10 @@ def write_heatmap(
         axis.set_ylabel("Row index", fontsize=8)
         axis.set_title(title, fontsize=12)
         colorbar = figure.colorbar(image, ax=axis, shrink=0.9)
+        colorbar.formatter = StrMethodFormatter(
+            f"{{x:.{COLORBAR_TICK_DECIMALS}f}}"
+        )
+        colorbar.update_ticks()
         colorbar.set_label(colorbar_label)
     figure.tight_layout()
     temporary = output.with_name(f".{output.name}.tmp.{os.getpid()}")
