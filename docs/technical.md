@@ -334,9 +334,6 @@ calls. `SPIKE_CALL_MODE` selects `mito`, `spike`, or `all`.
 subsampling fractions, and fits linear and saturation-curve models.
 For SmC, the lambda-enriched control spot `00_01` is excluded from saturation
 fitting and from all per-spot summary tables, plots, and aggregate spot metrics.
-On the first run, `SATURATION_THREADS` controls parallel input scanning: the
-pooled host BAM and `host.CG.cov` are read concurrently, while remaining worker
-capacity is assigned to BAM decompression. The default is four workers.
 
 ```text
 dbitm/saturation/
@@ -375,10 +372,6 @@ the corresponding estimate in `predicted_median_unique_cpgs`.
 `08.summary.sh` combines fastp, barcode, BAM, coverage, spike-in, and saturation
 statistics. It writes per-spot and sample-level tables plus context-specific
 heatmaps and violin plots.
-`SUMMARY_THREADS` controls parallel input scanning. The host BAM and requested
-host context coverage files are submitted as independent processes, so CG, CA,
-CC, and CT can be aggregated concurrently. Additional threads are also used for
-spike-in BAM decompression. The default is four workers.
 
 `per_spot_summary.tsv` begins with `row_index`, `col_index`, and `spot`.
 Spatial heatmaps place barcode2 columns on the horizontal axis and barcode1
