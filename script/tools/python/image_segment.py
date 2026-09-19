@@ -296,8 +296,8 @@ def build_tissue_positions(
                         center_in_image
                         and tissue_fraction >= MIN_TISSUE_FRACTION
                     ),
-                    "array_row": row,
-                    "array_col": col,
+                    "array_row": f"{row:02d}",
+                    "array_col": f"{col:02d}",
                     "pxl_row_in_fullres": center_y,
                     "pxl_col_in_fullres": center_x,
                 }

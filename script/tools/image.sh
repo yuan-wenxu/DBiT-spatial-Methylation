@@ -102,6 +102,7 @@ declare -a segment_args=(
 
 declare -a matrix_dirs=()
 declare -a matrix_targets=()
+declare -a context_targets=()
 if [[ -d "$methscan_dir" ]]; then
     while IFS= read -r -d '' matrix_dir; do
         if [[ -f "$matrix_dir/matrix.mtx.gz" && \
@@ -112,6 +113,10 @@ if [[ -d "$methscan_dir" ]]; then
             context=${relative_dir%%/*}
             matrix_name=$(basename "$matrix_dir")
             matrix_targets+=("$matrix_root/$context/$matrix_name")
+            context_target=$matrix_root/$context
+            if [[ ! " ${context_targets[*]} " =~ " ${context_target} " ]]; then
+                context_targets+=("$context_target")
+            fi
         else
             echo "[dbitm] image: skipping incomplete 10x directory: $matrix_dir" >&2
         fi
@@ -146,8 +151,13 @@ if [[ "$dry_run" == true ]]; then
         matrix_dir=${matrix_dirs[$index]}
         matrix_target=${matrix_targets[$index]}
         echo "[dbitm] planned 10x bundle: $matrix_dir -> $matrix_target"
-        echo "[dbitm] planned image metadata: $output_dir/tissue_positions.tsv.gz and $output_dir/fullres_grayscale.png -> $matrix_target"
     done
+    for context_target in "${context_targets[@]}"; do
+        echo "[dbitm] planned image metadata: $output_dir/tissue_positions.tsv.gz and $output_dir/fullres_grayscale.png -> $context_target"
+    done
+    if (( ${#matrix_dirs[@]} == 0 )); then
+        echo "[dbitm] no complete MethSCAn 10x directories found; no matrix copy planned"
+    fi
     echo "[dbitm] dry-run: no files will be written"
     echo "====== dbitm image segmentation dry-run finished ======"
     exit 0
@@ -163,7 +173,6 @@ if [[ ! -f "$positions_path" || ! -f "$grayscale_path" ]]; then
     echo "[dbitm] image: required segmentation outputs are missing" >&2
     exit 1
 fi
-mkdir -p "$matrix_root"
 for index in "${!matrix_dirs[@]}"; do
     matrix_dir=${matrix_dirs[$index]}
     matrix_target=${matrix_targets[$index]}
@@ -173,15 +182,17 @@ for index in "${!matrix_dirs[@]}"; do
         "$matrix_dir/barcodes.tsv.gz" \
         "$matrix_dir/features.tsv.gz" \
         "$matrix_target/"
-    cp -f -- "$positions_path" "$matrix_target/tissue_positions.tsv.gz"
-    cp -f -- "$grayscale_path" "$matrix_target/tissue_raw_image.png"
-    echo "[dbitm] wrote 10x image bundle: $matrix_target"
+    echo "[dbitm] wrote 10x matrix: $matrix_target"
+done
+for context_target in "${context_targets[@]}"; do
+    cp -f -- "$positions_path" "$context_target/tissue_positions.tsv.gz"
+    cp -f -- "$grayscale_path" "$context_target/tissue_raw_image.png"
+    echo "[dbitm] wrote image metadata: $context_target"
 done
 if (( ${#matrix_dirs[@]} == 0 )); then
-    cp -f -- "$positions_path" "$matrix_root/tissue_positions.tsv.gz"
-    cp -f -- "$grayscale_path" "$matrix_root/tissue_raw_image.png"
-    echo "[dbitm] image: warning: no complete MethSCAn 10x directories found; wrote image metadata only" >&2
+    echo "[dbitm] image: warning: no complete MethSCAn 10x directories found; skipped matrix copy" >&2
+else
+    echo "[dbitm] matrix bundles: $matrix_root"
 fi
 echo "[dbitm] tissue positions: $positions_path"
-echo "[dbitm] matrix bundles: $matrix_root"
 echo "====== dbitm image segmentation finished ======"

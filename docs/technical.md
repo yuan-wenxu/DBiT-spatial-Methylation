@@ -43,6 +43,7 @@ Standalone tools are not included in `all`:
 | Tool | Entry point | Purpose |
 |---|---|---|
 | `image` | `script/tools/image.sh` | Generate image-derived per-spot tissue positions |
+| `paired-taps` | `script/tools/paired_taps.sh` | Integrate paired TAPS and TAPS-beta coverage |
 
 ## 2. Installation and use
 
@@ -100,6 +101,23 @@ Frequently adjusted processing settings include:
 - Slurm CPU, memory, time, and partition values.
 
 See `config/dbitm.config.example.sh` for all settings.
+
+The paired TAPS/TAPS-beta integration is a standalone tool for both `taps` and
+`taps-v2`. Its two coverage files and spot-pairing table are passed
+independently:
+
+```bash
+dbitm taps paired-taps \
+    --taps-cov /path/to/taps/host.CG.cov \
+    --taps-beta-cov /path/to/taps-beta/host.CG.cov \
+    --spot-map /path/to/taps-to-taps-beta-nearest-spots.tsv
+```
+
+The output is written to a `paired-taps` directory beside the spot map.
+Filtering parameters use the `PAIRED_TAPS_*` settings. `RUN_MODE=local` runs
+the integration directly; `RUN_MODE=hpc` submits it as one Slurm job using the
+`PAIRED_TAPS_THREADS`, `PAIRED_TAPS_MEM`, `PAIRED_TAPS_TIME`, and
+`PAIRED_TAPS_PARTITION` resources. It is intentionally excluded from `all`.
 
 ## 3. Data conventions
 
@@ -493,23 +511,28 @@ an image instead of the raw FASTQ directory.
 
 After segmentation, the tool discovers complete `methylation_fractions` and
 `mean_shrunken_residuals` 10x directories below the sample MethSCAn root. It
-creates a sample-level `matrix` directory and copies each sparse matrix plus
-the image metadata into a standalone bundle:
+creates a sample-level `matrix` directory, copies each sparse matrix into its
+matrix-type subdirectory, and writes one shared image-metadata pair at the
+context level:
 
 ```text
-matrix/<context>/<matrix-type>/
-├── matrix.mtx.gz
-├── barcodes.tsv.gz
-├── features.tsv.gz
+matrix/<context>/
 ├── tissue_positions.tsv.gz
-└── tissue_raw_image.png
+├── tissue_raw_image.png
+├── methylation_fractions/
+│   ├── matrix.mtx.gz
+│   ├── barcodes.tsv.gz
+│   └── features.tsv.gz
+└── mean_shrunken_residuals/
+    ├── matrix.mtx.gz
+    ├── barcodes.tsv.gz
+    └── features.tsv.gz
 ```
 
 For an image under `<sample>/image`, MethSCAn input is read from
 `<sample>/dbitm/methscan` and bundles are written under `<sample>/matrix`.
-When no complete 10x directory exists, segmentation still succeeds and writes
-`tissue_positions.tsv.gz` and `tissue_raw_image.png` directly under the new
-`matrix` directory.
+When no complete 10x directory exists, segmentation still succeeds, but the
+tool skips the matrix copy and does not create `<sample>/matrix`.
 
 ## 5. Output and scratch behavior
 
