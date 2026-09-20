@@ -105,13 +105,15 @@ declare -a matrix_targets=()
 declare -a context_targets=()
 if [[ -d "$methscan_dir" ]]; then
     while IFS= read -r -d '' matrix_dir; do
+        matrix_name=$(basename "$matrix_dir")
         if [[ -f "$matrix_dir/matrix.mtx.gz" && \
               -f "$matrix_dir/barcodes.tsv.gz" && \
-              -f "$matrix_dir/features.tsv.gz" ]]; then
+              -f "$matrix_dir/features.tsv.gz" && \
+              ( "$matrix_name" != "mean_shrunken_residuals" || \
+                -f "$matrix_dir/mask.mtx.gz" ) ]]; then
             matrix_dirs+=("$matrix_dir")
             relative_dir=${matrix_dir#"$methscan_dir"/}
             context=${relative_dir%%/*}
-            matrix_name=$(basename "$matrix_dir")
             matrix_targets+=("$matrix_root/$context/$matrix_name")
             context_target=$matrix_root/$context
             if [[ ! " ${context_targets[*]} " =~ " ${context_target} " ]]; then
@@ -176,12 +178,17 @@ fi
 for index in "${!matrix_dirs[@]}"; do
     matrix_dir=${matrix_dirs[$index]}
     matrix_target=${matrix_targets[$index]}
+    matrix_name=$(basename "$matrix_dir")
+    matrix_files=(
+        "$matrix_dir/matrix.mtx.gz"
+        "$matrix_dir/barcodes.tsv.gz"
+        "$matrix_dir/features.tsv.gz"
+    )
+    if [[ "$matrix_name" == "mean_shrunken_residuals" ]]; then
+        matrix_files+=("$matrix_dir/mask.mtx.gz")
+    fi
     mkdir -p "$matrix_target"
-    cp -f -- \
-        "$matrix_dir/matrix.mtx.gz" \
-        "$matrix_dir/barcodes.tsv.gz" \
-        "$matrix_dir/features.tsv.gz" \
-        "$matrix_target/"
+    cp -f -- "${matrix_files[@]}" "$matrix_target/"
     echo "[dbitm] wrote 10x matrix: $matrix_target"
 done
 for context_target in "${context_targets[@]}"; do
