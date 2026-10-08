@@ -1,565 +1,250 @@
 # DBiT-spatial-Methylation Technical Reference
 
-## 1. Overview
+## Overview
 
-DBiT-spatial-Methylation processes paired-end spatial DNA methylation data. It
-filters FASTQs, extracts spatial barcodes, aligns host and spike-in reads,
-estimates M-bias, calls methylation, and generates summary and MethSCAn outputs.
-
-Supported assay names are `taps`, `taps-v2`, `emseq`, `cabernet`, and `smc`.
-SmC library structure and strand splitting are documented separately in
-`docs/smc-technical.md`.
+DBiT-spatial-Methylation processes paired-end spatial methylation FASTQs for
+`taps`, `taps-v2`, `emseq`, `cabernet`, and `smc`. It produces aligned BAMs,
+per-spot methylation coverage, QC summaries, and optional MethSCAn VMR matrices.
 
 ```text
-fastp -> barcode -> +-> spike-align -+
-                    |                 |
-                    +-> align --------+-> pool -> mbias -> [smc-filter] -+-> spike-call ---------+
-                                                                      |                       |
-                                                                      +-> call -> saturation -+-> summary -> methscan
+fastp -> barcode -> (spike-align + align) -> pool -> mbias -> [smc-filter]
+    -> call -> saturation -> summary -> methscan
+    -> spike-call ----------> summary
 ```
 
-`spike-align` and `align` can run concurrently. For SmC, `smc-filter` runs after
-M-bias; `spike-call` and `call` can then run concurrently from its outputs.
+## Installation and usage
 
-| Stage | Entry point | Purpose |
-|---|---|---|
-| `fastp` | `script/steps/01.fastp.sh` | Filter paired FASTQs |
-| `barcode` | `script/steps/02.barcode.sh` | Extract and correct spatial barcodes |
-| `spike-align` | `script/steps/03.spike_align.sh` | Align spike-in candidates |
-| `align` | `script/steps/03.align.sh` | Align host reads and add `CB` tags |
-| `pool` | `script/steps/04.pool.sh` | Pool, sort, and index BAMs |
-| `mbias` | `script/steps/05.mbias.sh` | Infer cycle trimming cutoffs |
-| `smc-filter` | `script/steps/05.1.smc_filter.sh` | Write persistent SmC XXX-filtered BAMs |
-| `spike-call` | `script/steps/06.spike_call.sh` | Call mitochondrial and spike-in methylation |
-| `call` | `script/steps/06.call.sh` | Call per-spot host methylation |
-| `saturation` | `script/steps/07.saturation.sh` | Estimate CpG saturation |
-| `summary` | `script/steps/08.summary.sh` | Generate QC tables and plots |
-| `methscan` | `script/steps/09.methscan.sh` | Generate context-specific dense and 10x sparse VMR matrices |
-
-The source code is authoritative if it differs from this document.
-
-Standalone tools are not included in `all`:
-
-| Tool | Entry point | Purpose |
-|---|---|---|
-| `image` | `script/tools/image.sh` | Generate image-derived per-spot tissue positions |
-| `paired-taps` | `script/tools/paired_taps.sh` | Integrate paired TAPS and TAPS-beta coverage |
-
-## 2. Installation and use
-
-The project uses Pixi. Install the command-line entry point with:
+Run from the repository root in Linux with Pixi installed:
 
 ```bash
-./install-cli.sh
-```
-
-Run one stage or the complete pipeline with:
-
-```bash
-dbitm <assay> <step> --input /path/to/sample/fastq
-dbitm taps all --input /data/sample/fastq
-```
-
-Useful options are:
-
-- `--config PATH`: select a configuration file.
-- `--resume STEP`: start an `all` run from a particular stage.
-- `--dry-run`: print or validate the execution plan without running tools.
-
-For input `/data/sample/fastq`, results are written under
-`/data/sample/dbitm`. `RUN_MODE=local` executes stages directly;
-`RUN_MODE=hpc` submits Slurm jobs with stage dependencies.
-
-Copy the example configuration before a production run:
-
-```bash
+pixi run init
 cp config/dbitm.config.example.sh config/dbitm.config.sh
 ```
 
-The main reference settings are:
+The installer adds `dbitm` to `~/.local/bin`; reload the shell if needed.
+`DBITM_INSTALL_DIR` changes the installation directory and `DBITM_BASHRC`
+changes the shell startup file updated by the installer.
 
-| Purpose | Configuration |
-|---|---|
-| TAPS host alignment | `BWA_INDEX` |
-| TAPS spike-in alignment | `BWA_SPIKE_IN_INDEXES` |
-| EM-seq/Cabernet/SmC host alignment | `BISCUIT_REFERENCE` |
-| EM-seq/Cabernet/SmC spike-in alignment | `BISCUIT_SPIKE_IN_INDEXES` |
-| Host calling | `CALL_REFERENCE` |
-| Spike-in calling | `CALL_SPIKE_IN_REFERENCES` |
-
-Calling FASTAs require SAMtools `.fai` indexes. Alignment references require
-the indexes expected by BWA or BISCUIT.
-
-Frequently adjusted processing settings include:
-
-- barcode whitelist, linker, insert-left, correction distance, chunks, and
-  compression;
-- `CALL_CONTEXT_MODE` (`cg`, `ch`, or `both`);
-- mapping/base-quality thresholds and caller parallelism;
-- M-bias sampling and stability thresholds;
-- summary registration-frame spot and interval lengths;
-- Slurm CPU, memory, time, and partition values.
-
-See `config/dbitm.config.example.sh` for all settings.
-
-The paired TAPS/TAPS-beta integration is a standalone tool for both `taps` and
-`taps-v2`. Its two coverage files and spot-pairing table are passed
-independently:
+Place one paired R1/R2 FASTQ set in the input directory. Set the references
+and execution mode in `config/dbitm.config.sh` before running. Build indexes
+with the aligner used by the assay and index each calling FASTA:
 
 ```bash
+# TAPS / TAPS-v2
+pixi run -e default bwa index /path/to/genome.fa
+# EM-seq / Cabernet / SmC
+pixi run -e default biscuit index /path/to/genome.fa
+```
+
+Prepare spike-in references the same way when using them.
+
+```bash
+dbitm taps all --input /data/sample/fastq --dry-run
+dbitm taps all --input /data/sample/fastq
+```
+
+| Argument | Meaning |
+|---|---|
+| `<assay>` | `taps`, `taps-v2`, `emseq`, `cabernet`, or `smc`. |
+| `<step>` | One stage shown in the overview, `all`, `image`, or `paired-taps`. |
+| `--input PATH` | Raw FASTQ directory; for `image`, the full-resolution image file. |
+| `--config PATH` | Configuration file; default: `config/dbitm.config.sh`. |
+| `--resume STEP` | With `all`, start at this stage and run all later stages. |
+| `--dry-run` | Validate inputs/configuration and print the plan without writing results. |
+| `-h`, `--help` | Show command help. |
+| `--taps-cov FILE` | TAPS coverage input for `paired-taps`. |
+| `--taps-beta-cov FILE` | TAPS-beta coverage input for `paired-taps`. |
+| `--spot-map FILE` | Spot-pairing table for `paired-taps`. |
+
+Standalone examples:
+
+```bash
+# Requires mask.png beside the image; results go into image-segmentation/.
+dbitm taps image --input /data/sample/image/tissue.png
+
+# Results go into paired-taps/ beside the spot-pairing table.
 dbitm taps paired-taps \
     --taps-cov /path/to/taps/host.CG.cov \
     --taps-beta-cov /path/to/taps-beta/host.CG.cov \
-    --spot-map /path/to/taps-to-taps-beta-nearest-spots.tsv
+    --spot-map /path/to/spot-pairs.tsv
 ```
 
-The output is written to a `paired-taps` directory beside the spot map.
-Filtering parameters use the `PAIRED_TAPS_*` settings. `RUN_MODE=local` runs
-the integration directly; `RUN_MODE=hpc` submits it as one Slurm job using the
-`PAIRED_TAPS_THREADS`, `PAIRED_TAPS_MEM`, `PAIRED_TAPS_TIME`, and
-`PAIRED_TAPS_PARTITION` resources. It is intentionally excluded from `all`.
+`paired-taps` accepts `taps` and `taps-v2`. `image` uses the barcode whitelist
+and `SUMMARY_FRAME_*` geometry settings.
 
-## 3. Data conventions
+## Library structure
 
-### 3.1 Spatial barcode
-
-For the original assays, the barcode-bearing mate has the conceptual layout:
+The barcode-bearing R1 in TAPS/TAPS-v2/EM-seq/Cabernet has this layout:
 
 ```text
-[barcode2][linker][barcode1][insert-left][biological insert]
+[barcode2][linker-BC][barcode1][insert-left][genomic insert]
 ```
 
-The barcode stage locates this structure, corrects both barcodes against the
-whitelist, removes the non-biological prefix, and annotates the read name with:
+The default whitelist has 50 barcodes of 8 bp. The default linker-BC is
+`ATCCACGTGCTTGAGAGGCCAGAGCATTCG` (30 bp), and insert-left is
+`CATCGGCGTACGACTAGATGTGTATAAGAGACAG` (34 bp). These anchors delimit the
+barcodes and genomic insert; the non-genomic prefix is removed.
+
+SmC uses 11 bp barcodes and different anchors:
 
 ```text
-barcode2+barcode1
+[fixed leader][barcode2][linker-BC][barcode1][linker2/insert-left][genomic insert]
 ```
 
-Host alignment moves this value into the BAM `CB` tag. Structure or barcode
-failures are written to spike-in candidate FASTQs.
+Its default whitelist has 96 entries. SmC reads are classified as Watson or
+Crick from linker conversion evidence and aligned separately. See
+[SmC library structure](smc-technical.md) for the anchor sequences and mate
+assignments.
 
-The call stage restores the logical spatial order when it reads the CB tag:
-barcode1 is the row index, barcode2 is the column index, and spot IDs use
-`<row>_<column>`.
 
-SmC uses different anchors and additionally splits informative reads into
-Watson and Crick groups. See `docs/smc-technical.md` for the exact layout.
-
-### 3.2 Coordinates and read cycles
-
-Coverage output uses zero-based genomic coordinates. The `start` and `end`
-fields both contain the called cytosine-representation coordinate; these files
-are not BED half-open intervals.
-
-CpG evidence from both reference strands is merged at the forward-strand C. CH
-output retains strand: plus sites use the reference C coordinate, and minus
-sites use the corresponding reference G coordinate.
-
-M-bias cycles are one-based and measured from the original molecule's 5-prime
-end. Reverse alignments invert the query position. R1 also receives the offset
-for sequence removed during barcode extraction; R2 does not.
-The configured original read length fixes the R1 and R2 cutoff-axis end, so
-low-coverage terminal cycles do not make either read appear shorter.
-
-### 3.3 Methylation evidence
-
-| Assay | Converted `TG`/`CA` | Retained `CG` |
+| Assay | Converted C-to-T evidence | Retained C evidence |
 |---|---|---|
-| TAPS / TAPS-v2 | methylated | unmethylated |
-| EM-seq / Cabernet / SmC | unmethylated | methylated |
+| TAPS / TAPS-v2 | Methylated | Unmethylated |
+| EM-seq / Cabernet / SmC | Unmethylated | Methylated |
 
-Only paired-end orientation flags `83`, `99`, `147`, and `163` are used for
-methylation classification.
+## Configuration parameters
 
-For CpG, plus- and minus-family evidence updates one forward-C counter. For CH
-(`CA`, `CC`, and `CT`):
+Defaults below come from [dbitm.config.example.sh](../config/dbitm.config.example.sh).
+Edit the local configuration or select another file with `--config`. An empty
+reference path must be set when its corresponding alignment/calling target is
+used. Sequence defaults are listed in the library structure sections.
 
-- forward-aligned reads (`99`, `163`) contribute to plus-strand C sites;
-- reverse-aligned reads (`83`, `147`) contribute to minus-strand G sites;
-- plus evidence is observed C/T and minus evidence is observed G/A;
-- the neighboring reference/read base must support the requested context.
+### Execution and references
 
-CH sites on the two strands are therefore not merged.
-
-## 4. Pipeline stages
-
-### 4.1 FASTQ filtering
-
-`01.fastp.sh` identifies one R1/R2 pair and runs fastp. Adapter trimming is
-disabled because barcode structure is handled by the next stage.
-
-```text
-dbitm/fastp/
-├── R1.filtered.fastq.gz
-├── R2.filtered.fastq.gz
-├── fastp.json
-├── fastp.html
-└── fastp.log
-```
-
-### 4.2 Barcode extraction
-
-`02.barcode.sh` dispatches the assay-specific Python extractor. Barcode
-correction uses the configured whitelist and Hamming-distance limit.
-
-Standard output chunks contain:
-
-```text
-0001.R1.demux.fastq.gz
-0001.R2.demux.fastq.gz
-0001.R1.spike-in.fastq.gz
-0001.R2.spike-in.fastq.gz
-0001.stats.json
-stats.json
-barcode.log
-```
-
-SmC writes Watson, Crick, ambiguous, and discarded pairs. Its stats follow:
-
-```text
-total_reads = kept_reads + discarded_reads
-kept_reads = informative_reads + ambiguous_reads
-informative_reads = watson_reads + crick_reads
-```
-
-`kept_reads` means barcode extraction succeeded; `informative_reads` can enter
-strand-specific SmC alignment.
-
-### 4.3 Host and spike-in alignment
-
-`03.align.sh` aligns demultiplexed host chunks:
-
-- TAPS/TAPS-v2: `bwa mem`.
-- EM-seq/Cabernet: `biscuit align` using `BISCUIT_DIRECTIONAL_MODE`.
-- SmC: Watson and Crick are aligned separately with `biscuit align -b 1`.
-
-For SmC the mate assignments are:
-
-| Group | BISCUIT R1/parent | BISCUIT R2/daughter |
+| Parameter | Default | Meaning |
 |---|---|---|
-| Watson | `NNNN.watson.genomic.fastq.gz` | `NNNN.watson.short-genomic.fastq.gz` |
-| Crick | `NNNN.crick.short-genomic.fastq.gz` | `NNNN.crick.genomic.fastq.gz` |
+| `RUN_MODE` | `hpc` | `local`: run directly; `hpc`: submit Slurm jobs with dependencies. |
+| `SCRATCH_ROOT` | Empty | Absolute scratch root for `barcode`, `pool`, `call`, and `methscan`; empty uses the sample directory. Results are copied back. |
+| `BWA_INDEX` | Empty | Host BWA index prefix for TAPS/TAPS-v2. |
+| `BWA_SPIKE_IN_INDEXES` | Empty `lambda`, `puc19` entries | Associative array mapping spike-in names to BWA index prefixes. |
+| `BISCUIT_REFERENCE` | Empty | BISCUIT-indexed host FASTA for EM-seq/Cabernet/SmC. |
+| `BISCUIT_SPIKE_IN_INDEXES` | Empty `lambda`, `puc19` entries | Associative array mapping spike-in names to BISCUIT-indexed FASTAs. |
+| `CALL_REFERENCE` | Empty | Host calling FASTA; requires a `.fai` index. |
+| `CALL_SPIKE_IN_REFERENCES` | Empty `lambda`, `puc19` entries | Associative array mapping spike-in names to calling FASTAs with `.fai` indexes. |
 
-No sequence is reverse-complemented; only the R1/R2 arguments are reordered.
-The alignment stream passes through `sinto nametotag` to create the `CB` tag.
 
-Standard assays produce `NNNN.cb.bam`; SmC produces
-`NNNN.watson.cb.bam` and `NNNN.crick.cb.bam`. Logs are stored in
-`dbitm/align/logs/`. BAMs are checked but are not sorted or indexed until pool.
-In HPC mode, each numbered barcode chunk is submitted as an independent Slurm
-job. For SmC, the Watson and Crick alignments belonging to the same number run
-sequentially in that chunk job. The internal `03.align_prepare.sh` job recreates
-the shared output directory before any chunk starts. The pool job depends on
-all host chunk jobs.
+### Barcodes and SmC classification
 
-`03.spike_align.sh` maps each spike-in FASTQ pair independently to every
-configured spike-in reference and writes one BAM and flagstat report per
-chunk/reference combination. For SmC, spike-in molecules are already present
-in the Watson and Crick FASTQs, so both groups are aligned with the same mate
-assignments shown above and `biscuit align -b 1`. SmC outputs retain the group
-in their names, for example `0001.watson.lambda.bam` and
-`0001.crick.lambda.bam`; discarded reads are not used as spike-in input.
-In HPC mode, each numbered barcode chunk is submitted as an independent Slurm
-job after `03.spike_align_prepare.sh` recreates the shared output directory.
-References and, for SmC, Watson/Crick inputs are processed sequentially within
-that chunk job. The pool job depends on all spike-in and host alignment jobs.
+| Parameter | Default | Meaning |
+|---|---|---|
+| `BARCODE_WHITELIST` | Empty | Standard-assay whitelist; empty selects `docs/barcodes/barcodes50.tsv`. |
+| `BARCODE_CHUNK` | `10` | Number of barcode worker processes and output FASTQ chunks. |
+| `BARCODE_BATCH_SIZE` | `50000` | Read pairs dispatched to a barcode worker at a time. |
+| `BARCODE_COMPRESSION_STEP` | `python` | Compress during Python output, or use `shell` for subsequent gzip compression. |
+| `BARCODE_GZIP_LEVEL` | `1` | gzip compression level, `0`–`9`. |
+| `BARCODE_LINKER_BC` | Standard linker-BC | Anchor between barcode2 and barcode1. |
+| `BARCODE_INSERT_LEFT` | Standard insert-left | Anchor defining the start of the genomic insert. |
+| `BARCODE_METHYLATED_C_POSITIONS` | `3,6,10` | Zero-based methylated C positions in insert-left for TAPS-v2 conversion QC. |
+| `BARCODE_LINKER_EDIT_DISTANCE` | `1` | Linker matching error allowance; also the standard TAPS insert-left allowance and SmC anchor allowance. |
+| `BARCODE_HAMMING_DISTANCE` | `1` | Maximum substitutions for unique nearest-whitelist barcode correction. |
+| `BARCODE_INSERT_LEFT_EDIT_DISTANCE` | `1` | Non-C mismatch allowance for C/T-aware insert-left matching in TAPS-v2/EM-seq/Cabernet. |
+| `BARCODE_PROGRESS_READS` | `1000000` | Progress log interval in read pairs per worker; `0` disables reporting. |
+| `SMC_BARCODE_WHITELIST` | Empty | SmC whitelist; empty selects `docs/barcodes/barcodes-smc.tsv`. |
+| `SMC_LINKER_BC` | SmC linker-BC | SmC anchor between the two barcodes. |
+| `SMC_INSERT_LEFT` | SmC insert-left | SmC anchor defining the genomic insert boundary. |
+| `SMC_MAX_CONVERSION_MISMATCHES` | `4` | Maximum C/T-position mismatches allowed for one SmC conversion class. |
+| `SMC_MINIMUM_SCORE_MARGIN` | `3` | Minimum difference between C-retained and C-to-T evidence for a confident class. |
+| `SMC_SAVE_UNINFORMATIVE_FASTQ` | `0` | `1` saves ambiguous/discarded FASTQs; counts are always recorded. |
 
-### 4.4 BAM pooling
+### Alignment and pooling
 
-`04.pool.sh` concatenates host chunk BAMs, coordinate-sorts the result, and
-creates its index. Spike-in BAMs are pooled independently.
+| Parameter | Default | Meaning |
+|---|---|---|
+| `ALIGN_THREADS_PER_CHUNK` | `24` | Aligner threads per host FASTQ chunk. |
+| `SPIKE_ALIGN_THREADS_PER_CHUNK` | `8` | Aligner threads per spike-in FASTQ chunk. |
+| `BISCUIT_DIRECTIONAL_MODE` | `1` | EM-seq/Cabernet library mode: `1` directional, `0` non-directional. SmC always uses `1`. |
+| `POOL_SORT_MEM` | `12G` | Memory per SAMtools sort thread; empty derives it from `POOL_MEM / POOL_THREADS`. |
 
-For assays other than SmC:
+### M-bias and calling
 
-```text
-dbitm/pooled/
-├── pooled.cb.bam
-├── pooled.cb.bam.bai
-├── pooled.<spike>.bam
-├── pooled.<spike>.bam.bai
-└── pool.log
-```
+| Parameter | Default | Meaning |
+|---|---|---|
+| `MBIAS_MODE` | `all` | Analyze `host`, configured `spike` targets, or `all`. |
+| `MBIAS_HOST_SUBSAMPLE_FRACTION` | `0.1` | Host record sampling fraction; applied independently to SmC Watson/Crick BAMs. Spike-ins use all records. |
+| `MBIAS_HOST_MAX_RECORDS` | `10000000` | Maximum sampled host records per target; `0` removes the cap. |
+| `MBIAS_MAX_CYCLE` | `150` | Maximum read cycle included in M-bias analysis. |
+| `MBIAS_MIN_CYCLE_COVERAGE` | `500` | A cycle needs more CpG observations than this to be included. |
+| `MBIAS_R1_ORIGINAL_LENGTH` | `150` | Original read length used for barcode-mate cycle offsets and both cutoff axes; `0` infers axes from observed cycles. |
+| `MBIAS_MIN_BASE_QUALITY` | `30` | Minimum base quality for M-bias evidence. |
+| `MBIAS_MIN_MAPPING_QUALITY` | `10` | Minimum mapping quality for M-bias evidence. |
+| `MBIAS_SAMPLING_SEED` | `42` | Seed for reproducible host sampling. |
+| `MBIAS_CUTOFF_RATE_TOLERANCE` | `0.05` | Maximum absolute methylation-rate deviation from the central baseline for a stable cycle. |
+| `CALL_CHROMOSOMES` | `chr1`–`chr19`, `chrX` | Comma-separated host chromosomes to call; also limits host SmC filtering. Match the reference names. |
+| `CALL_MITO_CHROMOSOMES` | `chrM` | Comma-separated mitochondrial reference names. |
+| `CALL_CONTEXT_MODE` | `both` | `cg`: CpG; `ch`: CA/CC/CT; `both`: all four. Also selects summary and MethSCAn contexts. |
+| `SPIKE_CALL_MODE` | `all` | Call `mito`, configured `spike` targets, or `all`. |
+| `CALL_MIN_BASE_QUALITY` | `MBIAS_MIN_BASE_QUALITY` | Minimum base quality for methylation calling. |
+| `CALL_MIN_MAPPING_QUALITY` | `MBIAS_MIN_MAPPING_QUALITY` | Minimum mapping quality for calling and summary BAM metrics. |
+| `CALL_MAX_DEPTH` | `1000000` | Maximum pileup depth per genomic position. |
+| `CALL_BATCH_SIZE` | `5000000` | Maximum calling interval length in bp; reduced for short chromosomes to occupy workers. |
+| `CALL_JOBS` | `16` | Worker processes within a host chromosome during calling. |
 
-`POOL_SORT_MEM` is memory per SAMtools sort thread. Spike-in names are read
-from the assay-specific configured alignment-index array.
+### Saturation and spatial geometry
 
-SmC keeps the conversion classes separate because Watson has the long parent
-as R1 and the short daughter as R2, whereas Crick has the short daughter as R1
-and the long parent as R2. It produces `pooled.watson.cb.bam` and
-`pooled.crick.cb.bam`, plus corresponding Watson/Crick spike-in pools. It does
-not create a merged `pooled.cb.bam` or merged spike-in BAM. M-bias and calling
-use the class-specific files, while summary and saturation count the two host
-BAMs directly.
+| Parameter | Default | Meaning |
+|---|---|---|
+| `SATURATION_READS_THRESHOLD` | `1000000` | Fallback reads-per-spot cutoff when automatic threshold inference fails. |
+| `SATURATION_PRED_FRACTION` | `2.0` | Sequencing-depth multiplier used to predict unique CpGs. |
+| `SATURATION_LINEAR_R2_THRESHOLD` | `0.99` | R² threshold for treating the subsampling curve as linear. |
+| `SUMMARY_FRAME_SPOT_LENGTH` | `50` | Spot side length in micrometers for the registration frame and image tool. |
+| `SUMMARY_FRAME_INTERVAL` | `50` | Gap between neighboring spots in micrometers. |
+| `SUMMARY_FRAME_PIXEL_LENGTH` | `0.294` | Image resolution in micrometers per pixel. |
 
-### 4.5 M-bias
 
-`05.mbias.sh` measures CpG methylation by R1/R2 cycle and infers end-trimming
-cutoffs. It excludes unmapped, secondary, supplementary, unsupported-orientation,
-`YD:u`, and low-quality evidence. Host reads may be deterministically
-subsampled; spike-in targets are processed in full.
+### MethSCAn and paired TAPS
 
-Each target produces:
+| Parameter | Default | Meaning |
+|---|---|---|
+| `METHSCAN_CHUNKSIZE` | `10000000` | Coverage rows read per preparation chunk. |
+| `METHSCAN_CG_MIN_SITES` | Empty | Minimum observed CG sites per spot to retain it; empty disables CG processing. |
+| `METHSCAN_CA_MIN_SITES` | Empty | Same setting for CA. |
+| `METHSCAN_CC_MIN_SITES` | Empty | Same setting for CC. |
+| `METHSCAN_CT_MIN_SITES` | Empty | Same setting for CT. |
+| `PAIRED_TAPS_BIN_SIZE` | `2000` | Genomic bin length in bp. |
+| `PAIRED_TAPS_MIN_COVERAGE_PER_SITE` | `1` | Minimum read coverage for an eligible site. |
+| `PAIRED_TAPS_MAX_COVERAGE_PER_SITE` | Empty | Maximum eligible site coverage; empty applies no upper limit. |
+| `PAIRED_TAPS_MIN_COVERAGE_PER_BIN` | `1` | Minimum total coverage per spot/bin for a usable observation. |
+| `PAIRED_TAPS_MIN_SITE_PER_BIN` | `1` | Minimum contributing sites per spot/bin. |
+| `PAIRED_TAPS_MIN_VALID_SPOTS_PER_BIN` | `6` | Minimum valid spots before testing bin variability. |
+| `PAIRED_TAPS_VARIABLE_FRACTION` | `0.02` | Fraction of eligible bins retained by residual variance; `1` retains all eligible bins. |
+| `PAIRED_TAPS_SHRINKAGE_LAMBDA` | `1.0` | Strength of coverage-aware residual shrinkage; `0` disables shrinkage. |
+| `PAIRED_TAPS_CHUNKSIZE` | `1000000` | Coverage rows read per chunk. |
 
-```text
-<label>.mbias.tsv
-<label>.mbias.png
-<label>.mbias.cutoffs.tsv
-```
 
-If no stable region can be inferred, a zero-byte cutoff marker means subsequent
-calling proceeds without trimming for that target.
+### Threads and Slurm resources
 
-For SmC, host and every spike-in produce separate Watson/Crick M-bias outputs,
-for example `host.watson.mbias.*` and `host.crick.mbias.*`. Their inferred R1/R2
-cutoffs are therefore applied only to the matching conversion class.
+Each prefix in the table below has five parameters:
 
-### 4.6 Methylation calling
+| Parameter pattern | Meaning |
+|---|---|
+| `<PREFIX>_NAME` | Slurm job name; defaults to the stage name in the first column below. |
+| `<PREFIX>_THREADS` | CPUs requested per Slurm job; also controls processing threads/workers where supported. |
+| `<PREFIX>_PARTITION` | Slurm partition; empty uses the cluster default. |
+| `<PREFIX>_MEM` | Total memory requested per Slurm job, such as `16G`. |
+| `<PREFIX>_TIME` | Slurm wall-time limit in `HH:MM:SS`. |
 
-`06.call.sh` creates combined spatial host coverage files from the pooled BAM
-(or the persistent filtered BAM for SmC), reference FASTA, barcode whitelist,
-and host M-bias cutoff. All whitelist spots are recorded in
-`coverage/spot_manifest.tsv`, including empty spots.
+| Stage / default name | Prefix | Default CPUs | Default memory | Default time |
+|---|---|---|---|---|
+| `fastp` | `FASTP` | `8` | `16G` | `24:00:00` |
+| `barcode` | `BARCODE` | `BARCODE_CHUNK` | `32G` | `48:00:00` |
+| `align` | `ALIGN` | `ALIGN_THREADS_PER_CHUNK` | `64G` | `96:00:00` |
+| `align-prepare` | `ALIGN_PREPARE` | `1` | `1G` | `00:30:00` |
+| `spike-align` | `SPIKE_ALIGN` | `SPIKE_ALIGN_THREADS_PER_CHUNK` | `16G` | `48:00:00` |
+| `spike-align-prepare` | `SPIKE_ALIGN_PREPARE` | `1` | `1G` | `00:30:00` |
+| `pool` | `POOL` | `4` | `64G` | `48:00:00` |
+| `mbias` | `MBIAS` | `1` | `16G` | `24:00:00` |
+| `smc-filter` | `SMC_FILTER` | `8` | `32G` | `24:00:00` |
+| `call` | `CALL` | `CALL_JOBS` | `96G` | `24:00:00` |
+| `spike-call` | `SPIKE_CALL` | `1` | `32G` | `24:00:00` |
+| `saturation` | `SATURATION` | `8` | `16G` | `24:00:00` |
+| `summary` | `SUMMARY` | `8` | `16G` | `24:00:00` |
+| `methscan` | `METHSCAN` | `10` | `64G` | `24:00:00` |
+| `image` | `IMAGE` | `1` | `32G` | `12:00:00` |
+| `paired-taps` | `PAIRED_TAPS` | `8` | `64G` | `24:00:00` |
 
-```text
-coverage/host/host.CG.cov
-coverage/host/host.CA.cov
-coverage/host/host.CC.cov
-coverage/host/host.CT.cov
-```
 
-Each row contains the genomic position, methylation percentage, methylated
-count, unmethylated count, and a seventh-column `<row>_<column>` spot ID. CH
-output additionally records strand in the eighth column. The files are not
-split into separate row, column, or spot directories.
-
-For SmC, Watson and Crick are called independently with
-`host.watson.mbias.cutoffs.tsv` and `host.crick.mbias.cutoffs.tsv`. The separate
-results are retained under `coverage/watson/host` and `coverage/crick/host`.
-Counts at matching sites are summed into `coverage/host`, preserving the
-existing downstream interface. The two spot manifests are merged by `spot_id`;
-each spot is retained once, and a spot present in only one branch is preserved.
-Mitochondrial and spike-in calls follow the same
-split-call-and-merge rule and retain files such as `lambda.watson.CG.cov` and
-`lambda.crick.CG.cov` alongside `lambda.CG.cov`.
-
-`06.spike_call.sh` creates aggregate, non-spatial mitochondrial and spike-in
-calls. `SPIKE_CALL_MODE` selects `mito`, `spike`, or `all`.
-
-### 4.7 CpG saturation
-
-`07.saturation.sh` selects sufficiently covered spots, estimates unique CpGs at
-subsampling fractions, and fits linear and saturation-curve models.
-For SmC, the lambda-enriched control spot `00_01` is excluded from saturation
-fitting and from all per-spot summary tables, plots, and aggregate spot metrics.
-
-```text
-dbitm/saturation/
-├── per_spot_cpg_depth_histogram.tsv.gz
-├── reads_per_spot_rank.png
-├── reads_threshold.tsv
-├── saturation_curve.png
-├── saturation_summary.tsv
-└── saturation.log
-```
-
-On the first run, the saturation stage infers a sample-specific reads threshold
-by applying two-class Otsu separation to log-transformed positive per-spot read
-counts. If the distribution is too small or insufficiently separated, it uses
-`SATURATION_READS_THRESHOLD` as the fallback. The selected value is written to
-`reads_threshold.tsv` and then used for spot selection. Later runs read this
-file instead of inferring the threshold again, so editing its single data value
-provides a persistent manual override. `reads_per_spot_rank.png` marks the value
-used by the run and reports how many spots exceed it.
-
-The compressed histogram contains `spot`, `reads`, `depth`, and `site_count`
-for every non-control spot with CpG coverage. It is written before applying the
-configured reads threshold, so it retains the information needed to evaluate
-alternative spot-selection thresholds without storing one row per CpG site.
-When this file already exists, later saturation runs load both the per-spot read
-counts and CpG depth histograms from it, skipping the BAM and `host.CG.cov`
-scans. Remove the file only when those upstream inputs have changed and the
-cache needs to be regenerated. Remove `reads_threshold.tsv` as well when the
-threshold should be inferred again instead of retaining the saved override.
-
-The summary records the configured multiplier in `prediction_fraction` and
-the corresponding estimate in `predicted_median_unique_cpgs`.
-
-### 4.8 Summary
-
-`08.summary.sh` combines fastp, barcode, BAM, coverage, spike-in, and saturation
-statistics. It writes per-spot and sample-level tables plus context-specific
-heatmaps and violin plots.
-
-`per_spot_summary.tsv` begins with `row_index`, `col_index`, and `spot`.
-Spatial heatmaps place barcode2 columns on the horizontal axis and barcode1
-rows on the vertical axis. Spot `00_00` is at the upper-right corner; row
-indices increase downward and column indices increase leftward.
-
-The summary also writes `frame_site_count.png` for image registration. Its
-square row/column count is inferred from the assay-specific barcode whitelist.
-Each spot is colored by CpG site count, falling back to CA site count when CpG
-data are unavailable. `SUMMARY_FRAME_SPOT_LENGTH` and
-`SUMMARY_FRAME_INTERVAL` control the spot side length and gap in micrometers;
-both default to 50. `SUMMARY_FRAME_PIXEL_LENGTH` sets image resolution and
-defaults to 0.294 micrometers per pixel. The frame uses the same orientation as
-the heatmaps. A same-size, single-channel, pure-black `mask.png` is written for
-registration workflows that require a companion mask.
-
-Per-spot methylation gives every called site equal weight:
-
-```text
-spot mean = sum(per-site methylation rate) / number of called sites
-```
-
-It is not calculated by pooling methylated and unmethylated read counts across
-sites. Host-wide context means weight each spot mean by its called-site count,
-which is equivalent to equal weighting of spot-by-site rows.
-
-Primary outputs are:
-
-```text
-dbitm/summary/
-├── per_spot_summary.tsv
-├── sample_summary.tsv
-├── frame_site_count.png
-├── mask.png
-├── reads_heatmap.png
-├── <context>_site_count_heatmap.png
-├── mean_<context>_methylation_heatmap.png
-├── mean_<context>_methylation_violin.png
-└── summary.log
-```
-
-Only plots for contexts selected by `CALL_CONTEXT_MODE` are generated.
-
-### 4.9 MethSCAn
-
-`09.methscan.sh` runs the following workflow independently for each selected
-context:
-
-```text
-prepare -> filter -> smooth -> scan -> matrix -> 10x sparse export
-```
-
-`CALL_CONTEXT_MODE` determines the candidate contexts. A candidate is processed
-only when its `METHSCAN_<CONTEXT>_MIN_SITES` setting is defined and non-empty;
-otherwise it is skipped. If no candidate context is enabled, the stage exits
-successfully without creating results.
-
-Outputs are stored under `dbitm/methscan/<context>`. Each selected directory
-contains VMRs and spot-by-VMR matrices. Missing matrix values mean no usable
-observation, not zero methylation.
-
-After `methscan matrix` finishes, the same stage converts
-`methylation_fractions.csv.gz` and `mean_shrunken_residuals.csv.gz`. For each
-input, it writes a feature-by-barcode Matrix Market matrix and matching 10x
-metadata:
-
-```text
-dbitm/methscan/<context>/matrix/10x/
-├── methylation_fractions/
-│   ├── matrix.mtx.gz
-│   ├── barcodes.tsv.gz
-│   └── features.tsv.gz
-└── mean_shrunken_residuals/
-    ├── matrix.mtx.gz
-    ├── barcodes.tsv.gz
-    └── features.tsv.gz
-```
-
-The conversion streams CSV rows and does not load the dense matrix into memory.
-Matrix Market omits both missing values and numeric zeros; use the original
-`total_sites.csv.gz` as an observation mask when that distinction matters.
-
-The Python converter can also be run directly on an existing MethSCAn matrix:
-
-```bash
-pixi run -e default python script/steps/python/09.dense_to_10x.py \
-    /path/to/methylation_fractions.csv.gz /path/to/output/10x
-```
-
-### 4.10 Image segmentation
-
-The standalone `image` tool accepts a full-resolution image rather than a
-FASTQ directory and reads an adjacent `mask.png`. The assay-specific
-barcode whitelist determines both grid dimensions; spot length, interval, and
-pixel size reuse the `SUMMARY_FRAME_*` settings so image positions match the
-registration frame. Its segmentation implementation is under
-`script/tools/python/image_segment.py` and uses the same algorithm as the
-DBiT-spatial-DARLIN image workflow.
-
-```bash
-dbitm taps image --input /path/to/WT-brain-S22.png
-```
-
-Results are isolated from other image workflows:
-
-```text
-image/image-segmentation/
-├── fullres_grayscale.png
-├── tissue_mask.png
-├── tissue_positions.tsv.gz
-└── meth-seg.log
-```
-
-The position table contains every spot with `barcode`, `in_tissue`,
-`array_row`, `array_col`, `pxl_row_in_fullres`, and `pxl_col_in_fullres`.
-Barcode sequences use barcode2+barcode1 order, with barcode1 mapped to rows and
-barcode2 mapped to columns. This tool is not part of `all` because its input is
-an image instead of the raw FASTQ directory.
-
-After segmentation, the tool discovers complete `methylation_fractions` and
-`mean_shrunken_residuals` 10x directories below the sample MethSCAn root. It
-creates a sample-level `matrix` directory, copies each sparse matrix into its
-matrix-type subdirectory, and writes one shared image-metadata pair at the
-context level:
-
-```text
-matrix/<context>/
-├── tissue_positions.tsv.gz
-├── tissue_raw_image.png
-├── methylation_fractions/
-│   ├── matrix.mtx.gz
-│   ├── barcodes.tsv.gz
-│   └── features.tsv.gz
-└── mean_shrunken_residuals/
-    ├── matrix.mtx.gz
-    ├── barcodes.tsv.gz
-    └── features.tsv.gz
-```
-
-For an image under `<sample>/image`, MethSCAn input is read from
-`<sample>/dbitm/methscan` and bundles are written under `<sample>/matrix`.
-When no complete 10x directory exists, segmentation still succeeds, but the
-tool skips the matrix copy and does not create `<sample>/matrix`.
-
-## 5. Output and scratch behavior
-
-A complete run uses this top-level layout:
-
-```text
-dbitm/
-├── fastp/
-├── barcode/
-├── align/
-├── spike_align/
-├── pooled/
-├── mbias/
-├── coverage/
-├── saturation/
-├── summary/
-└── methscan/
-```
-
-Exact files depend on assay and configuration.
-
-When `SCRATCH_ROOT` is set, only `barcode`, `pool`, `call`, and `methscan`
-create isolated scratch workspaces and copy their results back to the sample
-directory. These stages have substantial intermediate or random I/O. `fastp`,
-`align`, `spike-align`, `mbias`, `spike-call`, `saturation`, and `summary`
-always use the persistent sample directory so long-running or completed
-outputs are not held only on ephemeral storage. Handled failures in the four
-scratch-enabled stages attempt to recover partial output before removing their
-scratch workspace; recovered output may be incomplete and should be inspected
-before rerunning.
+| Parameter | Default | Meaning |
+|---|---|---|
+| `SBATCH_OUTPUT` | `%x_%j.out` | Slurm stdout filename pattern; `%x` is the job name and `%j` the job ID. |
+| `SBATCH_ERROR` | `%x_%j.err` | Slurm stderr filename pattern. |
+| `SBATCH_REQUEUE` | `true` | Allow Slurm requeueing when enabled. |
