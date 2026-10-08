@@ -49,6 +49,7 @@ declare -a saturation_args=(
     --reads-threshold "$SATURATION_READS_THRESHOLD"
     --pred-fraction "$SATURATION_PRED_FRACTION"
     --linear-r2-threshold "$SATURATION_LINEAR_R2_THRESHOLD"
+    --jobs "$SATURATION_THREADS"
 )
 
 echo "====== dbitm saturation ======"
@@ -58,6 +59,7 @@ echo "[dbitm] output directory: $output_dir"
 echo "[dbitm] fallback reads threshold: $SATURATION_READS_THRESHOLD"
 echo "[dbitm] prediction fraction: $SATURATION_PRED_FRACTION"
 echo "[dbitm] linear R2 threshold: $SATURATION_LINEAR_R2_THRESHOLD"
+echo "[dbitm] worker processes: $SATURATION_THREADS"
 echo "[dbitm] config: $config_file"
 
 if [[ "$dry_run" == true ]]; then

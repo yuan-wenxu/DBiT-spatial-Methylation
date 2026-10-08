@@ -8,17 +8,17 @@ import csv
 import gzip
 import json
 import math
+import multiprocessing
 import os
 import statistics
 import sys
-import tempfile
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from itertools import groupby
 from pathlib import Path
 from typing import Optional
 
-if "MPLCONFIGDIR" not in os.environ:
-    _MPL_CACHE = tempfile.TemporaryDirectory(prefix="dbitm-matplotlib-")
-    os.environ["MPLCONFIGDIR"] = _MPL_CACHE.name
+from bam_intervals import interval_records, reference_offsets
 
 import matplotlib
 
@@ -76,6 +76,12 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--pred-fraction", type=float, default=2.0)
     parser.add_argument("--linear-r2-threshold", type=float, default=0.99)
     parser.add_argument("--fastp-json")
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="Worker processes for intervals within one chromosome. Default: 1.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
 
@@ -87,6 +93,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--pred-fraction must be > 0")
     if not 0 < args.linear_r2_threshold <= 1:
         raise ValueError("--linear-r2-threshold must be in (0, 1]")
+    if args.jobs < 1:
+        raise ValueError("--jobs must be >= 1")
 
 
 def format_optional_int(value: Optional[float]) -> str:
@@ -123,22 +131,111 @@ def load_cb_to_spot(path: Path, c_to_t: bool = False) -> dict[str, str]:
     return cb_to_spot
 
 
-def count_spot_reads(
-    bam_paths: list[Path], cb_tag: str, cb_to_spot: dict[str, str]
+def count_bam_reads(
+    bam_path: Path,
+    cb_tag: str,
+    cb_to_spot: dict[str, str],
+    reference: Optional[str] = None,
+    start: int = 0,
+    end: int = 0,
+    first_record_offset: Optional[int] = None,
 ) -> dict[str, int]:
     counts: dict[str, int] = defaultdict(int)
+    with pysam.AlignmentFile(str(bam_path), "rb") as bam:
+        if reference == "*":
+            records = bam.fetch("*")
+        elif reference is not None:
+            records = interval_records(bam, reference, start, end, first_record_offset)
+        else:
+            records = bam.fetch(until_eof=True)
+        for record in records:
+            try:
+                cb_value = str(record.get_tag(cb_tag)).upper()
+            except KeyError:
+                continue
+            spot = cb_to_spot.get(cb_value)
+            if spot is not None:
+                counts[spot] += 1
+    return dict(counts)
+
+
+def bam_partitions(
+    bam_path: Path, jobs: int
+) -> list[tuple[Path, Optional[str], int, int]]:
+    with pysam.AlignmentFile(str(bam_path), "rb") as bam:
+        if not bam.has_index():
+            return [(bam_path, None, 0, 0)]
+        indexed_references = [
+            (reference, length)
+            for reference, length, stats in zip(
+                bam.references, bam.lengths, bam.get_index_statistics()
+            )
+            if length > 0 and stats.mapped + stats.unmapped > 0
+        ]
+    partitions = []
+    for reference, length in indexed_references:
+        target_bases = max(1, length // jobs)
+        partitions.extend(
+            (bam_path, reference, start, min(start + target_bases, length))
+            for start in range(0, length, target_bases)
+        )
+    partitions.append((bam_path, "*", 0, 0))
+    return partitions
+
+
+def count_spot_reads(
+    bam_paths: list[Path], cb_tag: str, cb_to_spot: dict[str, str], jobs: int = 1
+) -> dict[str, int]:
     for bam_path in bam_paths:
         if not bam_path.is_file():
             raise FileNotFoundError(f"host BAM not found: {bam_path}")
-        with pysam.AlignmentFile(str(bam_path), "rb") as bam:
-            for record in bam.fetch(until_eof=True):
-                try:
-                    cb_value = str(record.get_tag(cb_tag)).upper()
-                except KeyError:
-                    continue
-                spot = cb_to_spot.get(cb_value)
-                if spot is not None:
-                    counts[spot] += 1
+    counts: dict[str, int] = defaultdict(int)
+    for bam_path in bam_paths:
+        partitions = (
+            bam_partitions(bam_path, jobs)
+            if jobs > 1 else [(bam_path, None, 0, 0)]
+        )
+        offsets = (
+            reference_offsets(bam_path)
+            if any(reference not in (None, "*") for _, reference, _, _ in partitions)
+            else {}
+        )
+        for reference, group in groupby(partitions, key=lambda part: part[1]):
+            intervals = list(group)
+            worker_args = [
+                (path, cb_tag, cb_to_spot, reference, start, end,
+                 offsets.get(reference) if start == 0 else None)
+                for path, _, start, end in intervals
+            ]
+            print(
+                f"[saturation] bam={bam_path} chrom={reference} "
+                f"batch-size={intervals[0][3] - intervals[0][2]} "
+                f"batches={len(intervals)} workers={min(jobs, len(intervals))}"
+            )
+            if jobs == 1 or len(intervals) == 1:
+                partial_counts = [count_bam_reads(*args) for args in worker_args]
+            else:
+                with ProcessPoolExecutor(
+                    max_workers=min(jobs, len(intervals)),
+                    mp_context=multiprocessing.get_context("fork"),
+                ) as executor:
+                    future_to_interval = {
+                        executor.submit(count_bam_reads, *args): (args[4], args[5])
+                        for args in worker_args
+                    }
+                    partial_counts = []
+                    for future in as_completed(future_to_interval):
+                        start, end = future_to_interval[future]
+                        try:
+                            partial_counts.append(future.result())
+                        except Exception as exc:
+                            raise RuntimeError(
+                                f"bam={bam_path} chrom={reference} "
+                                f"interval={start}-{end} failed: {exc}"
+                            ) from exc
+            for bam_counts in partial_counts:
+                for spot, count in bam_counts.items():
+                    counts[spot] += count
     return dict(counts)
 
 
@@ -673,6 +770,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         print(f"[saturation] pred-fraction={args.pred_fraction}")
         print(f"[saturation] linear-r2-threshold={args.linear_r2_threshold}")
+        print(f"[saturation] jobs={args.jobs}")
         print(f"[saturation] fastp-json={fastp_path}")
         print(f"[saturation] spot-depth-histogram={histogram_path}")
         print(f"[saturation] reads-rank-plot={reads_rank_plot_path}")
@@ -702,7 +800,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             )
         else:
             cb_to_spot = load_cb_to_spot(manifest_path, c_to_t=barcode_c_to_t)
-            all_spot_reads = count_spot_reads(bam_paths, args.cb_tag, cb_to_spot)
+            all_spot_reads = count_spot_reads(
+                bam_paths, args.cb_tag, cb_to_spot, args.jobs
+            )
             if not coverage_path.is_file():
                 raise FileNotFoundError(f"host CG coverage not found: {coverage_path}")
             included_spots = set(cb_to_spot.values()) - excluded_spots

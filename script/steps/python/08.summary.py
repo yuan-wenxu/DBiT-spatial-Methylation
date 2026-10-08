@@ -8,17 +8,15 @@ import csv
 import gzip
 import json
 import math
+import multiprocessing
 import os
 import statistics
 import sys
-import tempfile
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from itertools import groupby
 from pathlib import Path
-from typing import Optional
-
-if "MPLCONFIGDIR" not in os.environ:
-    _MPL_CACHE = tempfile.TemporaryDirectory(prefix="dbitm-matplotlib-")
-    os.environ["MPLCONFIGDIR"] = _MPL_CACHE.name
+from typing import Callable, Iterator, Optional, TypeVar
 
 import matplotlib
 
@@ -34,6 +32,7 @@ CH_CONTEXTS = ("ca", "cc", "ct")
 SMC_EXCLUDED_SPOTS = frozenset({"00_01"})
 FRAME_BORDER_COLOR = "#D55E00"
 COLORBAR_TICK_DECIMALS = 2
+PartitionResult = TypeVar("PartitionResult")
 CONTEXT_SPECS = {
     "cg": {
         "suffix": "CG",
@@ -84,6 +83,12 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         help="Assay type used to interpret spatial barcodes. Default: taps.",
     )
     parser.add_argument("--output-dir")
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="Worker processes for intervals within one chromosome. Default: 1.",
+    )
     parser.add_argument("--cb-tag", default="CB")
     parser.add_argument("--min-mapping-quality", type=int, default=10)
     parser.add_argument(
@@ -257,51 +262,158 @@ def is_unique_mapped(record: pysam.AlignedSegment, minimum_mapq: int) -> bool:
     return not isinstance(nh, int) or nh <= 1
 
 
+def bam_partitions(
+    bam_path: Path, jobs: int
+) -> list[tuple[Path, Optional[str], int, int]]:
+    with pysam.AlignmentFile(str(bam_path), "rb") as bam:
+        if not bam.has_index():
+            return [(bam_path, None, 0, 0)]
+        indexed_references = [
+            (reference, length)
+            for reference, length, stats in zip(
+                bam.references, bam.lengths, bam.get_index_statistics()
+            )
+            if length > 0 and stats.mapped > 0
+        ]
+    partitions = []
+    for reference, length in indexed_references:
+        target_bases = max(1, length // jobs)
+        partitions.extend(
+            (bam_path, reference, start, min(start + target_bases, length))
+            for start in range(0, length, target_bases)
+        )
+    return partitions
+
+
+def bam_partition_results(
+    bam_paths: list[Path],
+    jobs: int,
+    worker: Callable[..., PartitionResult],
+    worker_args: tuple[object, ...],
+) -> Iterator[PartitionResult]:
+    """Process BAMs and chromosomes sequentially, forking interval workers."""
+    for bam_path in bam_paths:
+        partitions = (
+            bam_partitions(bam_path, jobs)
+            if jobs > 1 else [(bam_path, None, 0, 0)]
+        )
+        for reference, group in groupby(partitions, key=lambda part: part[1]):
+            intervals = list(group)
+            print(
+                f"[summary] bam={bam_path} chrom={reference} "
+                f"batch-size={intervals[0][3] - intervals[0][2]} "
+                f"batches={len(intervals)} workers={min(jobs, len(intervals))}"
+            )
+            if jobs == 1 or len(intervals) == 1:
+                for path, _, start, end in intervals:
+                    yield worker(path, *worker_args, reference, start, end)
+            else:
+                with ProcessPoolExecutor(
+                    max_workers=min(jobs, len(intervals)),
+                    mp_context=multiprocessing.get_context("fork"),
+                ) as executor:
+                    future_to_interval = {
+                        executor.submit(
+                            worker, path, *worker_args, reference, start, end
+                        ): (start, end)
+                        for path, _, start, end in intervals
+                    }
+                    for future in as_completed(future_to_interval):
+                        start, end = future_to_interval[future]
+                        try:
+                            result = future.result()
+                        except Exception as exc:
+                            raise RuntimeError(
+                                f"bam={bam_path} chrom={reference} "
+                                f"interval={start}-{end} failed: {exc}"
+                            ) from exc
+                        yield result
+
+
+def bam_records(
+    bam_path: Path, reference: Optional[str], start: int, end: int
+) -> Iterator[pysam.AlignedSegment]:
+    with pysam.AlignmentFile(str(bam_path), "rb") as bam:
+        records = (
+            bam.fetch(reference, start, end)
+            if reference is not None
+            else bam.fetch(until_eof=True)
+        )
+        for record in records:
+            if reference is None or start <= record.reference_start < end:
+                yield record
+
+
+def count_host_bam_region(
+    bam_path: Path,
+    cb_tag: str,
+    cb_to_spot: dict[str, str],
+    minimum_mapq: int,
+    reference: Optional[str],
+    start: int,
+    end: int,
+) -> tuple[dict[str, int], int, int]:
+    spot_counts: dict[str, int] = defaultdict(int)
+    mapped_reads = 0
+    valid_reads = 0
+    for record in bam_records(bam_path, reference, start, end):
+        if not is_unique_mapped(record, minimum_mapq):
+            continue
+        mapped_reads += 1
+        if record.flag in VALID_FLAGS:
+            valid_reads += 1
+        try:
+            spot = cb_to_spot.get(str(record.get_tag(cb_tag)).upper())
+        except KeyError:
+            spot = None
+        if spot is not None:
+            spot_counts[spot] += 1
+    return dict(spot_counts), mapped_reads, valid_reads
+
+
 def count_host_metrics(
     bam_paths: list[Path],
     cb_tag: str,
     cb_to_spot: dict[str, str],
     minimum_mapq: int,
+    jobs: int = 1,
 ) -> tuple[dict[str, int], Optional[int], Optional[int]]:
     spot_counts: dict[str, int] = defaultdict(int)
     mapped_reads = 0
     valid_reads = 0
     if any(not path.is_file() for path in bam_paths):
         return {}, None, None
-    for bam_path in bam_paths:
-        with pysam.AlignmentFile(str(bam_path), "rb") as bam:
-            for record in bam.fetch(until_eof=True):
-                try:
-                    cb_value = str(record.get_tag(cb_tag)).upper()
-                except KeyError:
-                    cb_value = ""
-                if (
-                    cb_value
-                    and is_unique_mapped(record, minimum_mapq)
-                    and not record.is_secondary
-                    and not record.is_supplementary
-                ):
-                    spot = cb_to_spot.get(cb_value)
-                    if spot is not None:
-                        spot_counts[spot] += 1
-                if not is_unique_mapped(record, minimum_mapq):
-                    continue
-                mapped_reads += 1
-                if record.flag in VALID_FLAGS:
-                    valid_reads += 1
+    partial_metrics = bam_partition_results(
+        bam_paths, jobs, count_host_bam_region,
+        (cb_tag, cb_to_spot, minimum_mapq),
+    )
+    for counts, mapped, valid in partial_metrics:
+        mapped_reads += mapped
+        valid_reads += valid
+        for spot, count in counts.items():
+            spot_counts[spot] += count
     return dict(spot_counts), mapped_reads, valid_reads
 
 
-def count_mapped_reads(paths: list[Path], minimum_mapq: int) -> Optional[int]:
+def count_mapped_partition(
+    path: Path, minimum_mapq: int, reference: Optional[str], start: int, end: int
+) -> int:
+    return sum(
+        is_unique_mapped(record, minimum_mapq)
+        for record in bam_records(path, reference, start, end)
+    )
+
+
+def count_mapped_reads(
+    paths: list[Path], minimum_mapq: int, jobs: int = 1
+) -> Optional[int]:
     if any(not path.is_file() for path in paths):
         return None
-    count = 0
-    for path in paths:
-        with pysam.AlignmentFile(str(path), "rb") as bam:
-            for record in bam.fetch(until_eof=True):
-                if is_unique_mapped(record, minimum_mapq):
-                    count += 1
-    return count
+    return sum(
+        bam_partition_results(
+            paths, jobs, count_mapped_partition, (minimum_mapq,)
+        )
+    )
 
 
 def parse_fastp_reads(path: Path) -> Optional[int]:
@@ -672,6 +784,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.min_mapping_quality < 0:
         print("[summary] error: --min-mapping-quality must be >= 0", file=sys.stderr)
         return 1
+    if args.jobs < 1:
+        print("[summary] error: --jobs must be >= 1", file=sys.stderr)
+        return 1
     if args.frame_spot_length <= 0:
         print("[summary] error: --frame-spot-length must be > 0", file=sys.stderr)
         return 1
@@ -729,6 +844,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(f"[summary] work-dir={work_dir}")
     print(f"[summary] assay={args.assay}")
     print(f"[summary] context-mode={args.context_mode}")
+    print(f"[summary] jobs={args.jobs}")
     print(f"[summary] barcode-whitelist={args.barcode_whitelist}")
     print(f"[summary] chip-size={chip_size}x{chip_size}")
     print(f"[summary] frame-spot-length={args.frame_spot_length}")
@@ -762,6 +878,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             args.cb_tag,
             cb_to_spot,
             args.min_mapping_quality,
+            args.jobs,
         )
         per_spot_rows = summarize_spots(
             host_cov_paths,
@@ -847,7 +964,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                 spike_bams = [
                     work_dir / "pooled" / f"pooled.{spike_name}.bam"
                 ]
-            mapped = count_mapped_reads(spike_bams, args.min_mapping_quality)
+            mapped = count_mapped_reads(
+                spike_bams, args.min_mapping_quality, args.jobs
+            )
             sample_row[f"{spike_name}_mapped_reads"] = format_int(mapped)
         sample_row["host_valid_reads"] = format_int(host_valid)
         sample_row["valid_reads_rate"] = format_percentage(host_valid, raw_reads)

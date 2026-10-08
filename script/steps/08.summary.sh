@@ -72,6 +72,11 @@ barcode_whitelist=$(realpath "$barcode_whitelist")
 frame_spot_length=${SUMMARY_FRAME_SPOT_LENGTH:-50}
 frame_interval=${SUMMARY_FRAME_INTERVAL:-50}
 frame_pixel_length=${SUMMARY_FRAME_PIXEL_LENGTH:-0.294}
+summary_jobs=$SUMMARY_THREADS
+if [[ ! "$summary_jobs" =~ ^[1-9][0-9]*$ ]]; then
+    echo "[dbitm] summary: SUMMARY_THREADS must be >= 1" >&2
+    exit 1
+fi
 if [[ ! "$frame_spot_length" =~ ^[1-9][0-9]*$ ]]; then
     echo "[dbitm] summary: SUMMARY_FRAME_SPOT_LENGTH must be > 0" >&2
     exit 1
@@ -114,6 +119,7 @@ declare -a summary_args=(
     --frame-spot-length "$frame_spot_length"
     --frame-interval "$frame_interval"
     --frame-pixel-length "$frame_pixel_length"
+    --jobs "$summary_jobs"
 )
 for spike_name in "${spike_names[@]}"; do
     summary_args+=(--spike-in-name "$spike_name")
@@ -128,6 +134,7 @@ echo "[dbitm] barcode whitelist: $barcode_whitelist"
 echo "[dbitm] frame spot length: $frame_spot_length"
 echo "[dbitm] frame interval: $frame_interval"
 echo "[dbitm] frame pixel length: $frame_pixel_length"
+echo "[dbitm] worker processes: $summary_jobs"
 echo "[dbitm] spike-ins: ${spike_names[*]:-none}"
 echo "[dbitm] config: $config_file"
 
