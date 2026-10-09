@@ -460,6 +460,7 @@ def summarize_spots(
     context_stats: dict[str, dict[str, Optional[tuple[float, int]]]] = {}
     observed_spots = set(positions) | set(spot_counts)
     for context, cov_path in context_cov_paths.items():
+        print(f"[summary] parsing {context} coverage: {cov_path}")
         cov_stats = parse_barcoded_cov_stats(cov_path)
         context_stats[context] = cov_stats
         observed_spots.update(cov_stats)
