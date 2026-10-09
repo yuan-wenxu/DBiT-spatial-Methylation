@@ -87,7 +87,9 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "--jobs",
         type=int,
         default=1,
-        help="Worker processes for intervals within one chromosome. Default: 1.",
+        help=(
+            "Worker processes for BAM intervals and coverage files. Default: 1."
+        ),
     )
     parser.add_argument("--cb-tag", default="CB")
     parser.add_argument("--min-mapping-quality", type=int, default=10)
@@ -451,18 +453,52 @@ def parse_barcoded_reads(path: Path) -> Optional[int]:
     return None if kept_pairs is None else kept_pairs * 2
 
 
+def parse_context_cov_stats(
+    context_cov_paths: dict[str, Path], jobs: int = 1
+) -> dict[str, dict[str, tuple[float, int]]]:
+    workers = min(jobs, len(context_cov_paths))
+    print(
+        f"[summary] coverage-files={len(context_cov_paths)} workers={workers}",
+        flush=True,
+    )
+    context_stats: dict[str, dict[str, tuple[float, int]]] = {}
+    if workers <= 1:
+        for context, cov_path in context_cov_paths.items():
+            print(f"[summary] parsing {context} coverage: {cov_path}", flush=True)
+            context_stats[context] = parse_barcoded_cov_stats(cov_path)
+    else:
+        with ProcessPoolExecutor(
+            max_workers=workers,
+            mp_context=multiprocessing.get_context("fork"),
+        ) as executor:
+            future_to_context = {}
+            for context, cov_path in context_cov_paths.items():
+                print(f"[summary] parsing {context} coverage: {cov_path}", flush=True)
+                future = executor.submit(parse_barcoded_cov_stats, cov_path)
+                future_to_context[future] = context
+            for future in as_completed(future_to_context):
+                context = future_to_context[future]
+                try:
+                    context_stats[context] = future.result()
+                except Exception as exc:
+                    raise ValueError(
+                        f"coverage={context} path={context_cov_paths[context]} "
+                        f"failed: {exc}"
+                    ) from exc
+                print(f"[summary] finished parsing {context} coverage", flush=True)
+    return {context: context_stats[context] for context in context_cov_paths}
+
+
 def summarize_spots(
     context_cov_paths: dict[str, Path],
     spot_counts: dict[str, int],
     positions: dict[str, tuple[str, str]],
     excluded_spots: frozenset[str] = frozenset(),
+    jobs: int = 1,
 ) -> list[dict[str, str]]:
-    context_stats: dict[str, dict[str, Optional[tuple[float, int]]]] = {}
+    context_stats = parse_context_cov_stats(context_cov_paths, jobs)
     observed_spots = set(positions) | set(spot_counts)
-    for context, cov_path in context_cov_paths.items():
-        print(f"[summary] parsing {context} coverage: {cov_path}")
-        cov_stats = parse_barcoded_cov_stats(cov_path)
-        context_stats[context] = cov_stats
+    for cov_stats in context_stats.values():
         observed_spots.update(cov_stats)
     observed_spots.difference_update(excluded_spots)
 
@@ -886,6 +922,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             spot_counts,
             positions,
             excluded_spots,
+            jobs=args.jobs,
         )
         if not per_spot_rows:
             raise ValueError("no per-spot coverage or CB-tagged reads were found")
