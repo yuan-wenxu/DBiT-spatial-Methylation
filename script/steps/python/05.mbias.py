@@ -6,12 +6,16 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import multiprocessing
 import os
 import random
 import sys
 from collections import defaultdict
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
-from typing import DefaultDict, List, Optional, Set, Tuple
+from typing import DefaultDict, Iterator, List, Optional, Set, Tuple
 
 import matplotlib
 import pysam
@@ -63,6 +67,14 @@ def parse_args() -> argparse.Namespace:
         help="Maximum selected alignment records; 0 means unlimited. Default: 10,000,000.",
     )
     parser.add_argument("--seed", type=int, default=42, help="Sampling seed. Default: 42.")
+    parser.add_argument(
+        "--jobs", type=int, default=1,
+        help="Worker processes for sampled read batches. Default: 1.",
+    )
+    parser.add_argument(
+        "--batch-size", type=int, default=10_000,
+        help="Selected alignment records per worker batch. Default: 10000.",
+    )
     parser.add_argument(
         "--max-cycle", type=int, default=150, help="Maximum cycle to report. Default: 150."
     )
@@ -117,6 +129,10 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("subsample-fraction must be in (0, 1]")
     if args.max_records < 0:
         raise ValueError("max-records must be >= 0")
+    if args.jobs < 1:
+        raise ValueError("jobs must be >= 1")
+    if args.batch_size < 1:
+        raise ValueError("batch-size must be >= 1")
     if args.max_cycle <= 0:
         raise ValueError("max-cycle must be > 0")
     if args.min_cycle_coverage < 0:
@@ -278,13 +294,153 @@ def add_observation(
         counts[(read_label, cycle_from_5p)][value_index] += 1
 
 
-def count_mbias(
+@dataclass
+class SamplingStats:
+    records_scanned: int = 0
+    records_selected: int = 0
+
+
+def selected_records(
+    args: argparse.Namespace,
+    bam_file: pysam.AlignmentFile,
+    selected_chromosomes: List[str],
+    stats: SamplingStats,
+) -> Iterator[pysam.AlignedSegment]:
+    """Keep sampling order and the record cap independent of worker count."""
+    rng = random.Random(args.seed)
+    if selected_chromosomes:
+        record_iterator = (
+            record
+            for chromosome in selected_chromosomes
+            for record in bam_file.fetch(chromosome)
+        )
+    else:
+        record_iterator = bam_file.fetch(until_eof=True)
+    for record in record_iterator:
+        stats.records_scanned += 1
+        if record.is_unmapped or record.is_secondary or record.is_supplementary:
+            continue
+        if record.flag not in PAIRED_FLAGS:
+            continue
+        if has_unclear_conversion_strand(record):
+            continue
+        if record.mapping_quality < args.min_mapping_quality:
+            continue
+        if args.subsample_fraction < 1 and rng.random() >= args.subsample_fraction:
+            continue
+        if args.max_records and stats.records_selected >= args.max_records:
+            break
+        if not record.query_sequence or record.reference_name is None:
+            continue
+        stats.records_selected += 1
+        yield record
+
+
+def count_record_observations(
+    args: argparse.Namespace,
+    record: pysam.AlignedSegment,
+    reference_sequence: str,
+    counts: MbiasCounts,
+) -> int:
+    observations = 0
+    for query_pos, ref_pos in record.get_aligned_pairs(matches_only=False):
+        if query_pos is None or ref_pos is None:
+            continue
+        if args.assay in {"emseq", "cabernet", "smc"}:
+            observation = classify_emseq(
+                record, query_pos, ref_pos, reference_sequence, args.min_base_quality
+            )
+        else:
+            observation = classify_taps(
+                record, query_pos, ref_pos, reference_sequence, args.min_base_quality
+            )
+        if observation is None:
+            continue
+        methylated, call_query_pos = observation
+        add_observation(
+            counts, record, call_query_pos, len(record.query_sequence), methylated,
+            args.max_cycle, args.r1_original_length, args.right_aligned_read,
+        )
+        observations += 1
+    return observations
+
+
+@lru_cache(maxsize=1)
+def cached_reference_sequence(reference: str, chromosome: str) -> str:
+    """Cache one contig per worker rather than reloading it for every batch."""
+    with pysam.FastaFile(reference) as fasta:
+        return fasta.fetch(chromosome).upper()
+
+
+def count_mbias_batch(
+    args: argparse.Namespace, header: dict[str, object], records: list[str]
+) -> Tuple[dict[Tuple[str, int], list[int]], int]:
+    bam_header = pysam.AlignmentHeader.from_dict(header)
+    counts: MbiasCounts = defaultdict(lambda: [0, 0])
+    observations = 0
+    for sam_record in records:
+        record = pysam.AlignedSegment.fromstring(sam_record, bam_header)
+        reference_sequence = cached_reference_sequence(
+            args.reference, record.reference_name
+        )
+        observations += count_record_observations(
+            args, record, reference_sequence, counts
+        )
+    return dict(counts), observations
+
+
+def count_mbias_parallel(
     args: argparse.Namespace, selected_chromosomes: List[str]
 ) -> Tuple[MbiasCounts, int, int, int]:
     counts: MbiasCounts = defaultdict(lambda: [0, 0])
-    rng = random.Random(args.seed)
-    records_scanned = 0
-    records_selected = 0
+    stats = SamplingStats()
+    observations = 0
+    batch_count = 0
+    with (
+        pysam.AlignmentFile(args.bam, "rb") as bam_file,
+        ProcessPoolExecutor(
+            max_workers=args.jobs,
+            mp_context=multiprocessing.get_context("fork"),
+        ) as executor,
+    ):
+        header = bam_file.header.to_dict()
+        pending = set()
+        batch: list[str] = []
+
+        def collect_results() -> None:
+            nonlocal observations, pending
+            completed, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for future in completed:
+                partial_counts, partial_observations = future.result()
+                observations += partial_observations
+                for key, values in partial_counts.items():
+                    counts[key][0] += values[0]
+                    counts[key][1] += values[1]
+
+        for record in selected_records(args, bam_file, selected_chromosomes, stats):
+            batch.append(record.to_string())
+            if len(batch) >= args.batch_size:
+                pending.add(executor.submit(count_mbias_batch, args, header, batch))
+                batch_count += 1
+                batch = []
+                if len(pending) >= args.jobs * 2:
+                    collect_results()
+        if batch:
+            pending.add(executor.submit(count_mbias_batch, args, header, batch))
+            batch_count += 1
+        while pending:
+            collect_results()
+    print(f"[mbias] batches={batch_count} workers={min(args.jobs, batch_count)}")
+    return counts, stats.records_scanned, stats.records_selected, observations
+
+
+def count_mbias(
+    args: argparse.Namespace, selected_chromosomes: List[str]
+) -> Tuple[MbiasCounts, int, int, int]:
+    if args.jobs > 1:
+        return count_mbias_parallel(args, selected_chromosomes)
+    counts: MbiasCounts = defaultdict(lambda: [0, 0])
+    stats = SamplingStats()
     observations = 0
 
     with (
@@ -293,72 +449,16 @@ def count_mbias(
     ):
         current_contig: Optional[str] = None
         reference_sequence = ""
-        if selected_chromosomes:
-            record_iterator = (
-                record
-                for chromosome in selected_chromosomes
-                for record in bam_file.fetch(chromosome)
-            )
-        else:
-            record_iterator = bam_file.fetch(until_eof=True)
-        for record in record_iterator:
-            records_scanned += 1
-            if record.is_unmapped or record.is_secondary or record.is_supplementary:
-                continue
-            if record.flag not in PAIRED_FLAGS:
-                continue
-            if has_unclear_conversion_strand(record):
-                continue
-            if record.mapping_quality < args.min_mapping_quality:
-                continue
-            if args.subsample_fraction < 1 and rng.random() >= args.subsample_fraction:
-                continue
-            if args.max_records and records_selected >= args.max_records:
-                break
-
-            sequence = record.query_sequence
-            if not sequence or record.reference_name is None:
-                continue
-            records_selected += 1
+        for record in selected_records(args, bam_file, selected_chromosomes, stats):
             if record.reference_name != current_contig:
                 current_contig = record.reference_name
                 reference_sequence = fasta.fetch(current_contig).upper()
 
-            for query_pos, ref_pos in record.get_aligned_pairs(matches_only=False):
-                if query_pos is None or ref_pos is None:
-                    continue
-                if args.assay in {"emseq", "cabernet", "smc"}:
-                    observation = classify_emseq(
-                        record,
-                        query_pos,
-                        ref_pos,
-                        reference_sequence,
-                        args.min_base_quality,
-                    )
-                else:
-                    observation = classify_taps(
-                        record,
-                        query_pos,
-                        ref_pos,
-                        reference_sequence,
-                        args.min_base_quality,
-                    )
-                if observation is None:
-                    continue
-                methylated, call_query_pos = observation
-                add_observation(
-                    counts,
-                    record,
-                    call_query_pos,
-                    len(sequence),
-                    methylated,
-                    args.max_cycle,
-                    args.r1_original_length,
-                    args.right_aligned_read,
-                )
-                observations += 1
+            observations += count_record_observations(
+                args, record, reference_sequence, counts
+            )
 
-    return counts, records_scanned, records_selected, observations
+    return counts, stats.records_scanned, stats.records_selected, observations
 
 
 def write_tsv(path: Path, counts: MbiasCounts) -> None:
@@ -456,6 +556,8 @@ def main() -> int:
     )
     print(f"[mbias] subsample-fraction={args.subsample_fraction}")
     print(f"[mbias] max-records={args.max_records or 'unlimited'}")
+    print(f"[mbias] jobs={args.jobs}")
+    print(f"[mbias] batch-size={args.batch_size}")
     print(f"[mbias] max-cycle={args.max_cycle}")
     print(f"[mbias] min-cycle-coverage={args.min_cycle_coverage}")
     print(f"[mbias] r1-original-length={args.r1_original_length or 'trimmed-relative'}")

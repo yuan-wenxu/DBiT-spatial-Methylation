@@ -80,6 +80,8 @@ MBIAS_MODE=${MBIAS_MODE:-all}
 MBIAS_HOST_SUBSAMPLE_FRACTION=${MBIAS_HOST_SUBSAMPLE_FRACTION:-0.1}
 # Maximum selected host alignment records per M-bias target; 0 disables the limit.
 MBIAS_HOST_MAX_RECORDS=${MBIAS_HOST_MAX_RECORDS:-10000000}
+# Selected records per worker batch; at most two batches per worker are queued.
+MBIAS_BATCH_SIZE=${MBIAS_BATCH_SIZE:-10000}
 MBIAS_MAX_CYCLE=${MBIAS_MAX_CYCLE:-150}
 # Cycles whose total CpG coverage does not exceed this are skipped in M-bias outputs.
 MBIAS_MIN_CYCLE_COVERAGE=${MBIAS_MIN_CYCLE_COVERAGE:-500}
@@ -184,7 +186,7 @@ POOL_MEM=${POOL_MEM:-64G}
 POOL_TIME=${POOL_TIME:-48:00:00}
 
 MBIAS_NAME=${MBIAS_NAME:-mbias}
-MBIAS_THREADS=${MBIAS_THREADS:-1}
+MBIAS_THREADS=${MBIAS_THREADS:-8}
 MBIAS_PARTITION=${MBIAS_PARTITION:-}
 MBIAS_MEM=${MBIAS_MEM:-16G}
 MBIAS_TIME=${MBIAS_TIME:-24:00:00}

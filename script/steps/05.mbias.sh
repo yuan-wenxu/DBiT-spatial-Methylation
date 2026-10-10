@@ -33,8 +33,6 @@ if [[ ! -f "$config_file" ]]; then
     exit 1
 fi
 source "$config_file"
-MBIAS_R1_ORIGINAL_LENGTH=${MBIAS_R1_ORIGINAL_LENGTH:-150}
-MBIAS_CUTOFF_RATE_TOLERANCE=${MBIAS_CUTOFF_RATE_TOLERANCE:-0.05}
 
 case "$MBIAS_MODE" in
     all|host|spike) ;;
@@ -101,6 +99,8 @@ echo "[dbitm] mode: $MBIAS_MODE"
 echo "[dbitm] pooled directory: $pooled_dir"
 echo "[dbitm] output directory: $output_dir"
 echo "[dbitm] host M-bias chromosomes: ${CALL_CHROMOSOMES:-all}"
+echo "[dbitm] worker processes: $MBIAS_THREADS"
+echo "[dbitm] selected records per batch: $MBIAS_BATCH_SIZE"
 echo "[dbitm] config: $config_file"
 
 log_path=/dev/null
@@ -166,6 +166,7 @@ run_mbias_target() {
         echo "[dbitm] dry-run BAM: $bam_path"
         echo "[dbitm] dry-run reference: $reference_path"
         echo "[dbitm] dry-run sampling: fraction=$subsample_fraction max-records=$max_records"
+        echo "[dbitm] dry-run workers: $MBIAS_THREADS batch-size=$MBIAS_BATCH_SIZE"
         echo "[dbitm] dry-run chromosomes: ${chromosomes:-all}"
         echo "[dbitm] dry-run right-aligned read: $right_aligned_read"
         return 0
@@ -201,6 +202,8 @@ run_mbias_target() {
         --subsample-fraction "$subsample_fraction" \
         --max-records "$max_records" \
         --seed "$MBIAS_SAMPLING_SEED" \
+        --jobs "$MBIAS_THREADS" \
+        --batch-size "$MBIAS_BATCH_SIZE" \
         --max-cycle "$MBIAS_MAX_CYCLE" \
         --min-cycle-coverage "$MBIAS_MIN_CYCLE_COVERAGE" \
         --r1-original-length "$MBIAS_R1_ORIGINAL_LENGTH" \
