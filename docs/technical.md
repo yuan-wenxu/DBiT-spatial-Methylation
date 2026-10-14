@@ -46,8 +46,8 @@ dbitm taps all --input /data/sample/fastq
 | Argument | Meaning |
 |---|---|
 | `<assay>` | `taps`, `taps-v2`, `emseq`, `cabernet`, or `smc`. |
-| `<step>` | One stage shown in the overview, `all`, `image`, or `paired-taps`. |
-| `--input PATH` | Raw FASTQ directory; for `image`, the full-resolution image file. |
+| `<step>` | One stage shown in the overview, `all`, `image`, `paired-taps`, or `hmc-spike`. |
+| `--input PATH` | Raw FASTQ directory; for `image`, the full-resolution image file; for `hmc-spike`, the barcode result directory. |
 | `--config PATH` | Configuration file; default: `config/dbitm.config.sh`. |
 | `--resume STEP` | With `all`, start at this stage and run all later stages. |
 | `--dry-run` | Validate inputs/configuration and print the plan without writing results. |
@@ -67,10 +67,15 @@ dbitm taps paired-taps \
     --taps-cov /path/to/taps/host.CG.cov \
     --taps-beta-cov /path/to/taps-beta/host.CG.cov \
     --spot-map /path/to/spot-pairs.tsv
+
+# Reads numbered R1 spike-in FASTQs from barcode/ and writes one text result
+# per input to the sibling hmc-spike/ directory.
+dbitm taps-v2 hmc-spike --input /data/sample/barcode
 ```
 
 `paired-taps` accepts `taps` and `taps-v2`. `image` uses the barcode whitelist
-and `SUMMARY_FRAME_*` geometry settings.
+and `SUMMARY_FRAME_*` geometry settings. `hmc-spike` also accepts only `taps`
+and `taps-v2`.
 
 ## Library structure
 
@@ -191,7 +196,7 @@ used. Sequence defaults are listed in the library structure sections.
 | `SUMMARY_FRAME_PIXEL_LENGTH` | `0.294` | Image resolution in micrometers per pixel. |
 
 
-### MethSCAn and paired TAPS
+### MethSCAn, paired TAPS, and 5hmC spike-in
 
 | Parameter | Default | Meaning |
 |---|---|---|
@@ -209,6 +214,10 @@ used. Sequence defaults are listed in the library structure sections.
 | `PAIRED_TAPS_VARIABLE_FRACTION` | `0.02` | Fraction of eligible bins retained by residual variance; `1` retains all eligible bins. |
 | `PAIRED_TAPS_SHRINKAGE_LAMBDA` | `1.0` | Strength of coverage-aware residual shrinkage; `0` disables shrinkage. |
 | `PAIRED_TAPS_CHUNKSIZE` | `1000000` | Coverage rows read per chunk. |
+| `HMC_SPIKE_LEFT_FLANK` | `TACCTGTGACTGAGACATCTG` | Fixed sequence before the middle motif. |
+| `HMC_SPIKE_MIDDLE` | `AAGGTGCAATCAGGTGTCAGTCTTAAAGGATCGATAAGGAAGCGGAA` | Middle motif. |
+| `HMC_SPIKE_RIGHT_FLANK` | `GTAGTGGTCTCGTCGTAGTGA` | Fixed sequence after the middle motif. |
+| `HMC_SPIKE_C_POSITIONS` | `7,11,18,22,32,43` | 1-based C positions within the middle motif to measure. |
 
 
 ### Threads and Slurm resources
@@ -241,6 +250,7 @@ Each prefix in the table below has five parameters:
 | `methscan` | `METHSCAN` | `10` | `64G` | `24:00:00` |
 | `image` | `IMAGE` | `1` | `32G` | `12:00:00` |
 | `paired-taps` | `PAIRED_TAPS` | `8` | `64G` | `24:00:00` |
+| `hmc-spike` | `HMC_SPIKE` | `BARCODE_THREADS` | `4G` | `08:00:00` |
 
 
 | Parameter | Default | Meaning |

@@ -12,8 +12,10 @@ Arguments:
   assay          Assay type: taps | taps-v2 | emseq | cabernet | smc
   step           Pipeline step: fastp | barcode | spike-align | align | pool | mbias | smc-filter | spike-call | call | saturation | summary | methscan | all
                  Note: smc-filter is available only when assay=smc.
-  tools          Standalone tools: image | paired-taps (not included in all)
-  --input PATH   Raw FASTQ directory; for image, the full-resolution image
+  tools          Standalone tools: image | paired-taps | hmc-spike (not included in all)
+  --input PATH   Raw FASTQ directory;
+                 for image, the full-resolution image;
+                 for hmc-spike, the barcode result directory
   --config PATH  Optional config file (default: config/dbitm.config.sh)
   --resume STEP  With step=all, start at STEP and run/submit all later steps
   --dry-run      Validate and print the execution plan without writing outputs
@@ -59,6 +61,7 @@ declare -A STEP_SCRIPTS=(
     [methscan]=09.methscan.sh
     [image]=image.sh
     [paired-taps]=paired_taps.sh
+    [hmc-spike]=hmc_spike.sh
 )
 ALL_STEPS=(fastp barcode spike-align align pool mbias smc-filter spike-call call saturation summary methscan)
 
@@ -85,7 +88,7 @@ fi
 if [[ "$step" != all && -z "${STEP_SCRIPTS[$step]:-}" ]]; then
     echo "[dbitm] error: unsupported step: $step" >&2
     echo "[dbitm] available pipeline steps: ${ALL_STEPS[*]} all" >&2
-    echo "[dbitm] available tools: image paired-taps" >&2
+    echo "[dbitm] available tools: image paired-taps hmc-spike" >&2
     usage
 fi
 
@@ -192,6 +195,10 @@ if [[ "$step" == paired-taps ]]; then
     spot_map=$(realpath "$spot_map")
     output_dir=$(dirname "$spot_map")/paired-taps
 else
+    if [[ "$step" == hmc-spike && "$assay" != taps && "$assay" != taps-v2 ]]; then
+        echo "[dbitm] error: hmc-spike requires assay=taps or taps-v2" >&2
+        exit 1
+    fi
     if [[ -z "$input" ]]; then
         echo "[dbitm] error: --input is required" >&2
         usage
@@ -254,7 +261,7 @@ echo "[dbitm] run mode: $RUN_MODE"
 
 get_step_script() {
     local step_name=$1
-    if [[ "$step_name" == image || "$step_name" == paired-taps ]]; then
+    if [[ "$step_name" == image || "$step_name" == paired-taps || "$step_name" == hmc-spike ]]; then
         printf '%s/%s\n' "$TOOLS_DIR" "${STEP_SCRIPTS[$step_name]}"
         return
     fi
@@ -676,6 +683,9 @@ if [[ "$RUN_MODE" == hpc ]]; then
     if [[ "$dry_run" == false ]] && ! command -v sbatch >/dev/null 2>&1; then
         echo "[dbitm] error: sbatch executable not found" >&2
         exit 1
+    fi
+    if [[ "$step" == hmc-spike && "$dry_run" == true ]]; then
+        "$(get_step_script "$step")" "$assay" "$input" --dry-run
     fi
     if [[ "$step" == all ]]; then
         submit_pipeline_hpc
