@@ -12,10 +12,12 @@ Arguments:
   assay          Assay type: taps | taps-v2 | emseq | cabernet | smc
   step           Pipeline step: fastp | barcode | spike-align | align | pool | mbias | smc-filter | spike-call | call | saturation | summary | methscan | all
                  Note: smc-filter is available only when assay=smc.
-  tools          Standalone tools: image | paired-taps | hmc-spike (not included in all)
+  tools          Standalone tools: image | paired-taps | hmc-spike | downsample
+                 (not included in all)
   --input PATH   Raw FASTQ directory;
                  for image, the full-resolution image;
-                 for hmc-spike, the barcode result directory
+                 for hmc-spike, the barcode result directory;
+                 for downsample, the raw FASTQ directory
   --config PATH  Optional config file (default: config/dbitm.config.sh)
   --resume STEP  With step=all, start at STEP and run/submit all later steps
   --dry-run      Validate and print the execution plan without writing outputs
@@ -25,6 +27,11 @@ paired-taps arguments:
   --taps-cov FILE       TAPS coverage file
   --taps-beta-cov FILE  TAPS-beta coverage file
   --spot-map FILE       TAPS/TAPS-beta spot-pairing table
+
+downsample arguments:
+  --fraction FLOAT     Retain each read pair with this probability, in [0, 1]
+  --reads INT          Retain up to this many read pairs per input FASTQ pair
+                       Choose exactly one of --fraction and --reads
 
 Execution mode is controlled by RUN_MODE in the config file:
   RUN_MODE=local   Run step directly
@@ -62,6 +69,7 @@ declare -A STEP_SCRIPTS=(
     [image]=image.sh
     [paired-taps]=paired_taps.sh
     [hmc-spike]=hmc_spike.sh
+    [downsample]=downsample.sh
 )
 ALL_STEPS=(fastp barcode spike-align align pool mbias smc-filter spike-call call saturation summary methscan)
 
@@ -88,7 +96,7 @@ fi
 if [[ "$step" != all && -z "${STEP_SCRIPTS[$step]:-}" ]]; then
     echo "[dbitm] error: unsupported step: $step" >&2
     echo "[dbitm] available pipeline steps: ${ALL_STEPS[*]} all" >&2
-    echo "[dbitm] available tools: image paired-taps hmc-spike" >&2
+    echo "[dbitm] available tools: image paired-taps hmc-spike downsample" >&2
     usage
 fi
 
@@ -100,6 +108,7 @@ spot_map=""
 config=""
 resume_step=""
 dry_run=false
+downsample_args=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -121,6 +130,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --config)
             config=$2
+            shift 2
+            ;;
+        --fraction|--reads)
+            if [[ "$step" != downsample || $# -lt 2 || -z "$2" ]]; then
+                echo "[dbitm] error: $1 requires a value and step=downsample" >&2
+                exit 1
+            fi
+            downsample_args+=("$1" "$2")
             shift 2
             ;;
         --resume)
@@ -261,7 +278,8 @@ echo "[dbitm] run mode: $RUN_MODE"
 
 get_step_script() {
     local step_name=$1
-    if [[ "$step_name" == image || "$step_name" == paired-taps || "$step_name" == hmc-spike ]]; then
+    if [[ "$step_name" == image || "$step_name" == paired-taps ||
+          "$step_name" == hmc-spike || "$step_name" == downsample ]]; then
         printf '%s/%s\n' "$TOOLS_DIR" "${STEP_SCRIPTS[$step_name]}"
         return
     fi
@@ -273,7 +291,11 @@ run_step_local() {
     local step_script
     step_script=$(get_step_script "$step_name")
     echo "[dbitm] running $step_name directly..."
-    if [[ "$step_name" == paired-taps && "$dry_run" == true ]]; then
+    if [[ "$step_name" == downsample ]]; then
+        local -a tool_args=("$assay" "$input" "${downsample_args[@]}")
+        [[ "$dry_run" == true ]] && tool_args+=(--dry-run)
+        "$step_script" "${tool_args[@]}"
+    elif [[ "$step_name" == paired-taps && "$dry_run" == true ]]; then
         "$step_script" "$assay" \
             --taps-cov "$taps_cov" \
             --taps-beta-cov "$taps_beta_cov" \
@@ -365,6 +387,12 @@ submit_step() {
         printf -v wrapped_command \
             'export DBITM_PROJECT_ROOT=%q DBITM_CONFIG=%q; %q %q %q' \
             "$REPO_DIR" "$config" "$step_script" "$assay" "$input"
+    fi
+    if [[ "$step_name" == downsample ]]; then
+        local tool_arg
+        for tool_arg in "${downsample_args[@]}"; do
+            printf -v wrapped_command '%s %q' "$wrapped_command" "$tool_arg"
+        done
     fi
 
     if [[ "$dry_run" == true ]]; then
@@ -678,6 +706,11 @@ submit_pipeline_hpc() {
     fi
     echo "[dbitm] job IDs: ${job_summary[*]}"
 }
+
+if [[ "$step" == downsample && "$RUN_MODE" == hpc ]]; then
+    "$(get_step_script "$step")" "$assay" "$input" \
+        "${downsample_args[@]}" --dry-run
+fi
 
 if [[ "$RUN_MODE" == hpc ]]; then
     if [[ "$dry_run" == false ]] && ! command -v sbatch >/dev/null 2>&1; then

@@ -46,8 +46,8 @@ dbitm taps all --input /data/sample/fastq
 | Argument | Meaning |
 |---|---|
 | `<assay>` | `taps`, `taps-v2`, `emseq`, `cabernet`, or `smc`. |
-| `<step>` | One stage shown in the overview, `all`, `image`, `paired-taps`, or `hmc-spike`. |
-| `--input PATH` | Raw FASTQ directory; for `image`, the full-resolution image file; for `hmc-spike`, the barcode result directory. |
+| `<step>` | One stage shown in the overview, `all`, `image`, `paired-taps`, `hmc-spike`, or `downsample`. |
+| `--input PATH` | Raw FASTQ directory (also for `downsample`); for `image`, the full-resolution image file; for `hmc-spike`, the barcode result directory. |
 | `--config PATH` | Configuration file; default: `config/dbitm.config.sh`. |
 | `--resume STEP` | With `all`, start at this stage and run all later stages. |
 | `--dry-run` | Validate inputs/configuration and print the plan without writing results. |
@@ -55,6 +55,8 @@ dbitm taps all --input /data/sample/fastq
 | `--taps-cov FILE` | TAPS coverage input for `paired-taps`. |
 | `--taps-beta-cov FILE` | TAPS-beta coverage input for `paired-taps`. |
 | `--spot-map FILE` | Spot-pairing table for `paired-taps`. |
+| `--fraction FLOAT` | Retention probability in [0, 1] for `downsample`; mutually exclusive with `--reads`. |
+| `--reads INT` | Target read pairs per input R1/R2 FASTQ pair (or all available if fewer); mutually exclusive with `--fraction`. |
 
 Standalone examples:
 
@@ -71,11 +73,13 @@ dbitm taps paired-taps \
 # Reads numbered R1 spike-in FASTQs from barcode/ and writes one text result
 # per input to the sibling hmc-spike/ directory.
 dbitm taps-v2 hmc-spike --input /data/sample/barcode
+
+# Sample R1/R2 synchronously; --reads 1000000 targets each input FASTQ pair.
+dbitm taps downsample --input /data/sample/fastq \
+    --fraction 0.1
 ```
 
-`paired-taps` accepts `taps` and `taps-v2`. `image` uses the barcode whitelist
-and `SUMMARY_FRAME_*` geometry settings. `hmc-spike` also accepts only `taps`
-and `taps-v2`.
+`paired-taps` and `hmc-spike` accept `taps` and `taps-v2`. `image` and `downsample` accepts every assay and runs separately from `all`.
 
 ## Library structure
 
@@ -172,7 +176,7 @@ used. Sequence defaults are listed in the library structure sections.
 | `MBIAS_R1_ORIGINAL_LENGTH` | `150` | Original read length used for barcode-mate cycle offsets and both cutoff axes; `0` infers axes from observed cycles. |
 | `MBIAS_MIN_BASE_QUALITY` | `30` | Minimum base quality for M-bias evidence. |
 | `MBIAS_MIN_MAPPING_QUALITY` | `10` | Minimum mapping quality for M-bias evidence. |
-| `MBIAS_SAMPLING_SEED` | `42` | Seed for reproducible host sampling. |
+| `MBIAS_SAMPLING_SEED` | `42` | Shared seed for reproducible M-bias host sampling and FASTQ downsampling. |
 | `MBIAS_CUTOFF_RATE_TOLERANCE` | `0.05` | Maximum absolute methylation-rate deviation from the central baseline for a stable cycle. |
 | `CALL_CHROMOSOMES` | `chr1`–`chr19`, `chrX` | Comma-separated host chromosomes to call; also limits host SmC filtering. Match the reference names. |
 | `CALL_MITO_CHROMOSOMES` | `chrM` | Comma-separated mitochondrial reference names. |
@@ -251,6 +255,7 @@ Each prefix in the table below has five parameters:
 | `image` | `IMAGE` | `1` | `32G` | `12:00:00` |
 | `paired-taps` | `PAIRED_TAPS` | `8` | `64G` | `24:00:00` |
 | `hmc-spike` | `HMC_SPIKE` | `BARCODE_THREADS` | `4G` | `08:00:00` |
+| `downsample` | `DOWNSAMPLE` | `1` | `2G` | `24:00:00` |
 
 
 | Parameter | Default | Meaning |
