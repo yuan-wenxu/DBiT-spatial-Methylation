@@ -707,11 +707,6 @@ submit_pipeline_hpc() {
     echo "[dbitm] job IDs: ${job_summary[*]}"
 }
 
-if [[ "$step" == downsample && "$RUN_MODE" == hpc ]]; then
-    "$(get_step_script "$step")" "$assay" "$input" \
-        "${downsample_args[@]}" --dry-run
-fi
-
 if [[ "$RUN_MODE" == hpc ]]; then
     if [[ "$dry_run" == false ]] && ! command -v sbatch >/dev/null 2>&1; then
         echo "[dbitm] error: sbatch executable not found" >&2
