@@ -5,10 +5,13 @@ from __future__ import annotations
 
 import argparse
 import gzip
-import sys
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, TextIO
+
+
+Anchor = tuple[int, re.Pattern[str]]
 
 
 @dataclass(frozen=True)
@@ -19,8 +22,9 @@ class MotifConfig:
     c_positions_1based: tuple[int, ...]
     c_positions_0based: tuple[int, ...]
     max_mismatches: int
-    left_anchors: tuple[tuple[int, str], ...]
-    right_anchors: tuple[tuple[int, str], ...]
+    left_anchors: tuple[Anchor, ...]
+    right_anchors: tuple[Anchor, ...]
+    assay: str | None = None
 
     @property
     def length(self) -> int:
@@ -33,9 +37,24 @@ def parse_inputs(
     """Collect the R1 path and motif settings from command-line arguments."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("r1", type=Path, help="R1 FASTQ or FASTQ.gz file")
-    parser.add_argument("--left-flank", required=True, help="Fixed left sequence (A/C/G/T)")
+    parser.add_argument(
+        "--assay",
+        choices=("taps", "taps-v2", "cabernet"),
+        help=(
+            "Report 5hmC as C for Cabernet or T for TAPS/TAPS-v2; "
+            "Cabernet also converts unselected middle C to T. "
+            "Omit to report only raw C/T statistics."
+        ),
+    )
+    parser.add_argument(
+        "--left-flank", required=True,
+        help="Fixed left sequence; reference C accepts C/T for Cabernet only",
+    )
     parser.add_argument("--middle", required=True, help="Middle sequence; N matches A/C/G/T")
-    parser.add_argument("--right-flank", required=True, help="Fixed right sequence (A/C/G/T)")
+    parser.add_argument(
+        "--right-flank", required=True,
+        help="Fixed right sequence; reference C accepts C/T for Cabernet only",
+    )
     parser.add_argument(
         "--c-positions",
         "--c-indices",
@@ -48,20 +67,25 @@ def parse_inputs(
 
 
 def make_anchors(
-    flank: str, motif_offset: int, max_mismatches: int
-) -> tuple[tuple[int, str], ...]:
-    """A flank with <= max_mismatches changes has an exact block if long enough."""
+    flank: str, motif_offset: int, max_mismatches: int,
+    c_to_t: bool = False,
+) -> tuple[Anchor, ...]:
+    """Partition a flank into anchors, allowing T only at reference C sites."""
     anchor_count = max_mismatches + 1
     block_length = len(flank) // anchor_count
     if block_length == 0:
         return ()
-    return tuple(
-        (
-            motif_offset + block * block_length,
-            flank[block * block_length : (block + 1) * block_length],
+    anchors = []
+    for block in range(anchor_count):
+        start = block * block_length
+        expected = flank[start : start + block_length]
+        pattern = "".join(
+            "[CT]" if c_to_t and base == "C" else re.escape(base)
+            for base in expected
         )
-        for block in range(anchor_count)
-    )
+        # Lookahead keeps overlapping occurrences, as in the original search.
+        anchors.append((motif_offset + start, re.compile(f"(?={pattern})")))
+    return tuple(anchors)
 
 
 def build_config(args: argparse.Namespace, parser: argparse.ArgumentParser) -> MotifConfig:
@@ -90,6 +114,13 @@ def build_config(args: argparse.Namespace, parser: argparse.ArgumentParser) -> M
     if any(middle[position - 1] != "C" for position in c_positions):
         parser.error("each --c-positions value must point to C in --middle")
 
+    if args.assay == "cabernet":
+        selected_positions = {position - 1 for position in c_positions}
+        middle = "".join(
+            "T" if base == "C" and index not in selected_positions else base
+            for index, base in enumerate(middle)
+        )
+
     max_mismatches = (len(left) + len(right)) // 10
     return MotifConfig(
         left=left,
@@ -98,25 +129,43 @@ def build_config(args: argparse.Namespace, parser: argparse.ArgumentParser) -> M
         c_positions_1based=c_positions,
         c_positions_0based=tuple(position - 1 for position in c_positions),
         max_mismatches=max_mismatches,
-        left_anchors=make_anchors(left, 0, max_mismatches),
-        right_anchors=make_anchors(
-            right, len(left) + len(middle), max_mismatches
+        left_anchors=make_anchors(
+            left, 0, max_mismatches, c_to_t=args.assay == "cabernet"
         ),
+        right_anchors=make_anchors(
+            right, len(left) + len(middle), max_mismatches,
+            c_to_t=args.assay == "cabernet",
+        ),
+        assay=args.assay,
     )
 
 
 def candidate_starts(
-    sequence: str, anchors: tuple[tuple[int, str], ...], last_start: int
+    sequence: str, anchors: tuple[Anchor, ...], last_start: int
 ) -> set[int]:
     candidate_starts: set[int] = set()
     for offset, anchor in anchors:
-        search_from = 0
-        while (found := sequence.find(anchor, search_from)) != -1:
-            start = found - offset
+        for match in anchor.finditer(sequence):
+            start = match.start() - offset
             if 0 <= start <= last_start:
                 candidate_starts.add(start)
-            search_from = found + 1
     return candidate_starts
+
+
+def flank_mismatch_count(
+    observed: str, expected: str, c_to_t: bool
+) -> int | None:
+    """Use barcode extraction's reference-C rule for Cabernet flanks."""
+    if len(observed) != len(expected):
+        raise ValueError("observed and expected sequence length mismatch")
+    mismatches = 0
+    for observed_base, expected_base in zip(observed, expected):
+        if c_to_t and expected_base == "C":
+            if observed_base not in "CT":
+                return None
+        elif observed_base != expected_base:
+            mismatches += 1
+    return mismatches
 
 
 def middle_matches(observed: str, config: MotifConfig) -> bool:
@@ -156,12 +205,21 @@ def find_matches(
     for start in sorted(left_starts & right_starts):
         left_read = sequence[start : start + len(config.left)]
         right_start = start + len(config.left) + len(config.middle)
-        right_read = sequence[right_start : right_start + len(config.right)]
-        left_mismatches = sum(a != b for a, b in zip(left_read, config.left))
-        if left_mismatches > config.max_mismatches:
+        right_read = sequence[
+            right_start : right_start + len(config.right)
+        ]
+        left_mismatches = flank_mismatch_count(
+            left_read, config.left, c_to_t=config.assay == "cabernet"
+        )
+        if left_mismatches is None or left_mismatches > config.max_mismatches:
             continue
-        right_mismatches = sum(a != b for a, b in zip(right_read, config.right))
-        if left_mismatches + right_mismatches > config.max_mismatches:
+        right_mismatches = flank_mismatch_count(
+            right_read, config.right, c_to_t=config.assay == "cabernet"
+        )
+        if (
+            right_mismatches is None
+            or left_mismatches + right_mismatches > config.max_mismatches
+        ):
             continue
 
         middle_read = sequence[
@@ -222,19 +280,32 @@ def main() -> None:
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
 
+    hmc_base = "C" if config.assay == "cabernet" else "T"
+    assay_summary = (
+        f"assay={config.assay} hmc_base={hmc_base}"
+        if config.assay is not None else ""
+    )
     print(
         f"[find-r1-5hmc-motif] reads={total_reads} "
-        f"matched_reads={matched_reads} matches={matches} "
+        f"matched_reads={matched_reads} matches={matches} {assay_summary}"
     )
     for position in config.c_positions_1based:
         c_count = site_counts[position]["C"]
         t_count = site_counts[position]["T"]
         total = c_count + t_count
+        hmc_summary = ""
+        if config.assay is not None:
+            hmc_count = site_counts[position][hmc_base]
+            hmc_fraction = hmc_count / total if total else 0.0
+            hmc_summary = (
+                f" hmc_count={hmc_count} hmc_fraction={hmc_fraction:.4f}"
+            )
         print(
             f"[find-r1-5hmc-motif] middle_position_1based={position} "
             f"C={c_count} T={t_count} "
             f"C_fraction={c_count / total if total else 0.0:.4f} "
             f"T_fraction={t_count / total if total else 0.0:.4f}"
+            f"{hmc_summary}"
         )
 
 

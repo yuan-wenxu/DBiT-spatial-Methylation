@@ -73,13 +73,16 @@ dbitm taps paired-taps \
 # Reads numbered R1 spike-in FASTQs from barcode/ and writes one text result
 # per input to the sibling hmc-spike/ directory.
 dbitm taps-v2 hmc-spike --input /data/sample/barcode
+dbitm cabernet hmc-spike --input /data/cabernet/barcode
 
 # Sample R1/R2 synchronously; --reads 1000000 targets each input FASTQ pair.
 dbitm taps downsample --input /data/sample/fastq \
     --fraction 0.1
 ```
 
-`paired-taps` and `hmc-spike` accept `taps` and `taps-v2`. `image` and `downsample` accepts every assay and runs separately from `all`.
+`paired-taps` accepts `taps` and `taps-v2`. `hmc-spike` accepts `taps`,
+`taps-v2`, and `cabernet`. `image` and `downsample` accept every
+assay and run separately from `all`.
 
 ## Library structure
 

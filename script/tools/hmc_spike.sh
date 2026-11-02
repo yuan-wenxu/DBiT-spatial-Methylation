@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if (( $# < 2 || $# > 3 )); then
-    echo "Usage: hmc_spike.sh <taps|taps-v2> <barcode_dir> [--dry-run]" >&2
+    echo "Usage: hmc_spike.sh <taps|taps-v2|cabernet> <barcode_dir> [--dry-run]" >&2
     exit 1
 fi
 
@@ -17,8 +17,11 @@ if (( $# == 3 )); then
     dry_run=true
 fi
 case "$assay" in
-    taps|taps-v2) ;;
-    *) echo "[dbitm] hmc-spike: assay must be taps or taps-v2" >&2; exit 1 ;;
+    taps|taps-v2|cabernet) ;;
+    *)
+        echo "[dbitm] hmc-spike: assay must be taps, taps-v2 or cabernet" >&2
+        exit 1
+        ;;
 esac
 if [[ ! -d "$barcode_dir" ]]; then
     echo "[dbitm] hmc-spike: barcode directory not found: $barcode_dir" >&2
@@ -141,6 +144,7 @@ for index in "${!input_files[@]}"; do
     output_file=${output_files[$index]}
     motif_args=(
         "$input_file"
+        --assay "$assay"
         --left-flank "$left_flank"
         --middle "$middle"
         --right-flank "$right_flank"

@@ -212,8 +212,9 @@ if [[ "$step" == paired-taps ]]; then
     spot_map=$(realpath "$spot_map")
     output_dir=$(dirname "$spot_map")/paired-taps
 else
-    if [[ "$step" == hmc-spike && "$assay" != taps && "$assay" != taps-v2 ]]; then
-        echo "[dbitm] error: hmc-spike requires assay=taps or taps-v2" >&2
+    if [[ "$step" == hmc-spike && "$assay" != taps &&
+          "$assay" != taps-v2 && "$assay" != cabernet ]]; then
+        echo "[dbitm] error: hmc-spike requires assay=taps, taps-v2 or cabernet" >&2
         exit 1
     fi
     if [[ -z "$input" ]]; then
