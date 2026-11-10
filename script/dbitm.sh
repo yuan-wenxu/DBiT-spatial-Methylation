@@ -12,7 +12,7 @@ Arguments:
   assay          Assay type: taps | taps-v2 | emseq | cabernet | smc
   step           Pipeline step: fastp | barcode | spike-align | align | pool | mbias | smc-filter | spike-call | call | saturation | summary | methscan | all
                  Note: smc-filter is available only when assay=smc.
-  tools          Standalone tools: image | paired-taps | hmc-spike | downsample
+  tools          Standalone tools: image | hmc-spike | downsample
                  (not included in all)
   --input PATH   Raw FASTQ directory;
                  for image, the full-resolution image;
@@ -22,11 +22,6 @@ Arguments:
   --resume STEP  With step=all, start at STEP and run/submit all later steps
   --dry-run      Validate and print the execution plan without writing outputs
   -h, --help     Show this help message and exit
-
-paired-taps arguments:
-  --taps-cov FILE       TAPS coverage file
-  --taps-beta-cov FILE  TAPS-beta coverage file
-  --spot-map FILE       TAPS/TAPS-beta spot-pairing table
 
 downsample arguments:
   --fraction FLOAT     Retain each read pair with this probability, in [0, 1]
@@ -67,7 +62,6 @@ declare -A STEP_SCRIPTS=(
     [summary]=08.summary.sh
     [methscan]=09.methscan.sh
     [image]=image.sh
-    [paired-taps]=paired_taps.sh
     [hmc-spike]=hmc_spike.sh
     [downsample]=downsample.sh
 )
@@ -96,15 +90,12 @@ fi
 if [[ "$step" != all && -z "${STEP_SCRIPTS[$step]:-}" ]]; then
     echo "[dbitm] error: unsupported step: $step" >&2
     echo "[dbitm] available pipeline steps: ${ALL_STEPS[*]} all" >&2
-    echo "[dbitm] available tools: image paired-taps hmc-spike downsample" >&2
+    echo "[dbitm] available tools: image hmc-spike downsample" >&2
     usage
 fi
 
 # ── parse optional arguments ──
 input=""
-taps_cov=""
-taps_beta_cov=""
-spot_map=""
 config=""
 resume_step=""
 dry_run=false
@@ -114,18 +105,6 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --input)
             input=$2
-            shift 2
-            ;;
-        --taps-cov)
-            taps_cov=$2
-            shift 2
-            ;;
-        --taps-beta-cov)
-            taps_beta_cov=$2
-            shift 2
-            ;;
-        --spot-map)
-            spot_map=$2
             shift 2
             ;;
         --config)
@@ -183,55 +162,25 @@ if [[ -n "$resume_step" ]]; then
     PIPELINE_STEPS=("${ALL_STEPS[@]:resume_step_index}")
 fi
 
-if [[ "$step" == paired-taps ]]; then
-    case "$assay" in
-        taps|taps-v2) ;;
-        *)
-            echo "[dbitm] error: paired-taps requires assay=taps or taps-v2" >&2
-            exit 1
-            ;;
-    esac
-    if [[ -n "$input" ]]; then
-        echo "[dbitm] error: paired-taps uses --taps-cov and --taps-beta-cov, not --input" >&2
-        exit 1
-    fi
-    for required_option in taps_cov taps_beta_cov spot_map; do
-        if [[ -z ${!required_option} ]]; then
-            echo "[dbitm] error: --${required_option//_/-} is required for paired-taps" >&2
-            exit 1
-        fi
-    done
-    for input_file in "$taps_cov" "$taps_beta_cov" "$spot_map"; do
-        if [[ ! -f "$input_file" ]]; then
-            echo "[dbitm] error: paired-taps input file not found: $input_file" >&2
-            exit 1
-        fi
-    done
-    taps_cov=$(realpath "$taps_cov")
-    taps_beta_cov=$(realpath "$taps_beta_cov")
-    spot_map=$(realpath "$spot_map")
-    output_dir=$(dirname "$spot_map")/paired-taps
-else
-    if [[ "$step" == hmc-spike && "$assay" != taps &&
-          "$assay" != taps-v2 && "$assay" != cabernet ]]; then
-        echo "[dbitm] error: hmc-spike requires assay=taps, taps-v2 or cabernet" >&2
-        exit 1
-    fi
-    if [[ -z "$input" ]]; then
-        echo "[dbitm] error: --input is required" >&2
-        usage
-    fi
-    if [[ "$step" == image ]]; then
-        if [[ ! -f "$input" ]]; then
-            echo "[dbitm] error: input image not found: $input" >&2
-            exit 1
-        fi
-    elif [[ ! -d "$input" ]]; then
-        echo "[dbitm] error: input directory not found: $input" >&2
-        exit 1
-    fi
-    input=$(realpath "$input")
+if [[ "$step" == hmc-spike && "$assay" != taps &&
+      "$assay" != taps-v2 && "$assay" != cabernet ]]; then
+    echo "[dbitm] error: hmc-spike requires assay=taps, taps-v2 or cabernet" >&2
+    exit 1
 fi
+if [[ -z "$input" ]]; then
+    echo "[dbitm] error: --input is required" >&2
+    usage
+fi
+if [[ "$step" == image ]]; then
+    if [[ ! -f "$input" ]]; then
+        echo "[dbitm] error: input image not found: $input" >&2
+        exit 1
+    fi
+elif [[ ! -d "$input" ]]; then
+    echo "[dbitm] error: input directory not found: $input" >&2
+    exit 1
+fi
+input=$(realpath "$input")
 
 # resolve config
 DEFAULT_CONFIG="$REPO_DIR/config/dbitm.config.sh"
@@ -253,15 +202,7 @@ fi
 export DBITM_PROJECT_ROOT=$REPO_DIR
 export DBITM_CONFIG=$config
 
-if [[ "$step" == paired-taps ]]; then
-    echo "[dbitm] assay: $assay | step: $step"
-    echo "[dbitm] TAPS coverage: $taps_cov"
-    echo "[dbitm] TAPS-beta coverage: $taps_beta_cov"
-    echo "[dbitm] spot map: $spot_map"
-    echo "[dbitm] output directory: $output_dir"
-else
-    echo "[dbitm] assay: $assay | step: $step | input: $input"
-fi
+echo "[dbitm] assay: $assay | step: $step | input: $input"
 echo "[dbitm] config: $config"
 echo "[dbitm] dry-run: $dry_run"
 if [[ -n "$resume_step" ]]; then
@@ -279,8 +220,8 @@ echo "[dbitm] run mode: $RUN_MODE"
 
 get_step_script() {
     local step_name=$1
-    if [[ "$step_name" == image || "$step_name" == paired-taps ||
-          "$step_name" == hmc-spike || "$step_name" == downsample ]]; then
+    if [[ "$step_name" == image || "$step_name" == hmc-spike ||
+          "$step_name" == downsample ]]; then
         printf '%s/%s\n' "$TOOLS_DIR" "${STEP_SCRIPTS[$step_name]}"
         return
     fi
@@ -296,17 +237,6 @@ run_step_local() {
         local -a tool_args=("$assay" "$input" "${downsample_args[@]}")
         [[ "$dry_run" == true ]] && tool_args+=(--dry-run)
         "$step_script" "${tool_args[@]}"
-    elif [[ "$step_name" == paired-taps && "$dry_run" == true ]]; then
-        "$step_script" "$assay" \
-            --taps-cov "$taps_cov" \
-            --taps-beta-cov "$taps_beta_cov" \
-            --spot-map "$spot_map" \
-            --dry-run
-    elif [[ "$step_name" == paired-taps ]]; then
-        "$step_script" "$assay" \
-            --taps-cov "$taps_cov" \
-            --taps-beta-cov "$taps_beta_cov" \
-            --spot-map "$spot_map"
     elif [[ "$dry_run" == true ]]; then
         "$step_script" "$assay" "$input" --dry-run
     else
@@ -356,11 +286,7 @@ submit_step() {
     time=${!time_var}
     step_script=$(get_step_script "$step_name")
 
-    if [[ "$step_name" == paired-taps ]]; then
-        log_dir=$(dirname "$output_dir")/dbitm/logs
-    else
-        log_dir=$(dirname "$input")/dbitm/logs
-    fi
+    log_dir=$(dirname "$input")/dbitm/logs
     output_path=${SBATCH_OUTPUT:-%x_%j.out}
     error_path=${SBATCH_ERROR:-%x_%j.err}
     [[ "$output_path" == /* ]] || output_path=$log_dir/$output_path
@@ -379,16 +305,9 @@ submit_step() {
     [[ "${SBATCH_REQUEUE:-}" == true ]] && sbatch_args+=(--requeue)
     [[ -n "$dependency" ]] && sbatch_args+=(--dependency="afterok:$dependency")
 
-    if [[ "$step_name" == paired-taps ]]; then
-        printf -v wrapped_command \
-            'export DBITM_PROJECT_ROOT=%q DBITM_CONFIG=%q; %q %q --taps-cov %q --taps-beta-cov %q --spot-map %q' \
-            "$REPO_DIR" "$config" "$step_script" "$assay" \
-            "$taps_cov" "$taps_beta_cov" "$spot_map"
-    else
-        printf -v wrapped_command \
-            'export DBITM_PROJECT_ROOT=%q DBITM_CONFIG=%q; %q %q %q' \
-            "$REPO_DIR" "$config" "$step_script" "$assay" "$input"
-    fi
+    printf -v wrapped_command \
+        'export DBITM_PROJECT_ROOT=%q DBITM_CONFIG=%q; %q %q %q' \
+        "$REPO_DIR" "$config" "$step_script" "$assay" "$input"
     if [[ "$step_name" == downsample ]]; then
         local tool_arg
         for tool_arg in "${downsample_args[@]}"; do

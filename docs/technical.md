@@ -46,15 +46,12 @@ dbitm taps all --input /data/sample/fastq
 | Argument | Meaning |
 |---|---|
 | `<assay>` | `taps`, `taps-v2`, `emseq`, `cabernet`, or `smc`. |
-| `<step>` | One stage shown in the overview, `all`, `image`, `paired-taps`, `hmc-spike`, or `downsample`. |
+| `<step>` | One stage shown in the overview, `all`, `image`, `hmc-spike`, or `downsample`. |
 | `--input PATH` | Raw FASTQ directory (also for `downsample`); for `image`, the full-resolution image file; for `hmc-spike`, the barcode result directory. |
 | `--config PATH` | Configuration file; default: `config/dbitm.config.sh`. |
 | `--resume STEP` | With `all`, start at this stage and run all later stages. |
 | `--dry-run` | Validate inputs/configuration and print the plan without writing results. |
 | `-h`, `--help` | Show command help. |
-| `--taps-cov FILE` | TAPS coverage input for `paired-taps`. |
-| `--taps-beta-cov FILE` | TAPS-beta coverage input for `paired-taps`. |
-| `--spot-map FILE` | Spot-pairing table for `paired-taps`. |
 | `--fraction FLOAT` | Retention probability in [0, 1] for `downsample`; mutually exclusive with `--reads`. |
 | `--reads INT` | Target read pairs per input R1/R2 FASTQ pair (or all available if fewer); mutually exclusive with `--fraction`. |
 
@@ -63,12 +60,6 @@ Standalone examples:
 ```bash
 # Requires mask.png beside the image; results go into image-segmentation/.
 dbitm taps image --input /data/sample/image/tissue.png
-
-# Results go into paired-taps/ beside the spot-pairing table.
-dbitm taps paired-taps \
-    --taps-cov /path/to/taps/host.CG.cov \
-    --taps-beta-cov /path/to/taps-beta/host.CG.cov \
-    --spot-map /path/to/spot-pairs.tsv
 
 # Reads numbered R1 spike-in FASTQs from barcode/ and writes one text result
 # per input to the sibling hmc-spike/ directory.
@@ -80,9 +71,8 @@ dbitm taps downsample --input /data/sample/fastq \
     --fraction 0.1
 ```
 
-`paired-taps` accepts `taps` and `taps-v2`. `hmc-spike` accepts `taps`,
-`taps-v2`, and `cabernet`. `image` and `downsample` accept every
-assay and run separately from `all`.
+`hmc-spike` accepts `taps`, `taps-v2`, and `cabernet`. `image` and `downsample`
+accept every assay and run separately from `all`.
 
 ## Library structure
 
@@ -203,7 +193,7 @@ used. Sequence defaults are listed in the library structure sections.
 | `SUMMARY_FRAME_PIXEL_LENGTH` | `0.294` | Image resolution in micrometers per pixel. |
 
 
-### MethSCAn, paired TAPS, and 5hmC spike-in
+### MethSCAn and 5hmC spike-in
 
 | Parameter | Default | Meaning |
 |---|---|---|
@@ -212,15 +202,6 @@ used. Sequence defaults are listed in the library structure sections.
 | `METHSCAN_CA_MIN_SITES` | Empty | Same setting for CA. |
 | `METHSCAN_CC_MIN_SITES` | Empty | Same setting for CC. |
 | `METHSCAN_CT_MIN_SITES` | Empty | Same setting for CT. |
-| `PAIRED_TAPS_BIN_SIZE` | `2000` | Genomic bin length in bp. |
-| `PAIRED_TAPS_MIN_COVERAGE_PER_SITE` | `1` | Minimum read coverage for an eligible site. |
-| `PAIRED_TAPS_MAX_COVERAGE_PER_SITE` | Empty | Maximum eligible site coverage; empty applies no upper limit. |
-| `PAIRED_TAPS_MIN_COVERAGE_PER_BIN` | `1` | Minimum total coverage per spot/bin for a usable observation. |
-| `PAIRED_TAPS_MIN_SITE_PER_BIN` | `1` | Minimum contributing sites per spot/bin. |
-| `PAIRED_TAPS_MIN_VALID_SPOTS_PER_BIN` | `6` | Minimum valid spots before testing bin variability. |
-| `PAIRED_TAPS_VARIABLE_FRACTION` | `0.02` | Fraction of eligible bins retained by residual variance; `1` retains all eligible bins. |
-| `PAIRED_TAPS_SHRINKAGE_LAMBDA` | `1.0` | Strength of coverage-aware residual shrinkage; `0` disables shrinkage. |
-| `PAIRED_TAPS_CHUNKSIZE` | `1000000` | Coverage rows read per chunk. |
 | `HMC_SPIKE_LEFT_FLANK` | `TACCTGTGACTGAGACATCTG` | Fixed sequence before the middle motif. |
 | `HMC_SPIKE_MIDDLE` | `AAGGTGCAATCAGGTGTCAGTCTTAAAGGATCGATAAGGAAGCGGAA` | Middle motif. |
 | `HMC_SPIKE_RIGHT_FLANK` | `GTAGTGGTCTCGTCGTAGTGA` | Fixed sequence after the middle motif. |
@@ -256,7 +237,6 @@ Each prefix in the table below has five parameters:
 | `summary` | `SUMMARY` | `8` | `16G` | `24:00:00` |
 | `methscan` | `METHSCAN` | `10` | `64G` | `24:00:00` |
 | `image` | `IMAGE` | `1` | `32G` | `12:00:00` |
-| `paired-taps` | `PAIRED_TAPS` | `8` | `64G` | `24:00:00` |
 | `hmc-spike` | `HMC_SPIKE` | `BARCODE_THREADS` | `4G` | `08:00:00` |
 | `downsample` | `DOWNSAMPLE` | `1` | `2G` | `24:00:00` |
 
