@@ -265,16 +265,10 @@ def write_outputs(args: argparse.Namespace, chromosomes: list[str]) -> tuple[int
                             cg_lines += 1
                     if ch_handles:
                         for (pos, context, strand), (methylated, unmethylated) in sorted(ch_counts.items()):
-                            ch_handles[context].write(
-                                SHARED.format_ch_line(
-                                    chromosome,
-                                    pos,
-                                    methylated,
-                                    unmethylated,
-                                    context,
-                                    strand,
-                                )
-                            )
+                            cov_line = SHARED.format_cg_line(
+                                chromosome, pos, methylated, unmethylated
+                            ).rstrip("\n")
+                            ch_handles[context].write(f"{cov_line}\t{strand}\n")
                             ch_lines += 1
         finally:
             if cg_handle is not None:
